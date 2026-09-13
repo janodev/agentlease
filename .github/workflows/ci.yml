@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: [self-hosted, macOS, ARM64]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify toolchain
+        run: |
+          test "$(sw_vers -productVersion | cut -d. -f1)" -ge 27
+          xcodebuild -version | grep '^Xcode 27\.'
+          xcodebuild -version
+          swift --version
+      - name: Build and test
+        run: make test
+      - name: Check whitespace
+        run: git diff --check
