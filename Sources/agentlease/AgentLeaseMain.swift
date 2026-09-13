@@ -5,6 +5,14 @@ import Foundation
 @main
 enum AgentLeaseMain {
     static func main() async {
+        do {
+            try ProcessSignalState.captureInheritedMask()
+        } catch {
+            FileHandle.standardError.write(
+                Data("agentlease: could not capture inherited signal mask: \(error)\n".utf8)
+            )
+            Darwin.exit(70)
+        }
         guard rawArgumentsAreValidUTF8() else {
             FileHandle.standardError.write(
                 Data("agentlease: command arguments must be valid UTF-8\n".utf8)

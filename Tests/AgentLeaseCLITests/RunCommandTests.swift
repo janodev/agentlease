@@ -87,7 +87,7 @@ struct RunCommandTests {
         #expect(fields[4] == "kept")
     }
 
-    @Test("Nested invocation fails before creating state or starting a command")
+    @Test("Nested run and exec fail before creating state or starting a command")
     func nestedInvocation() throws {
         let fixture = try CLIFixture()
         defer { fixture.remove() }
@@ -101,6 +101,16 @@ struct RunCommandTests {
         #expect(child.process.terminationStatus == 70)
         #expect(!FileManager.default.fileExists(atPath: fixture.stateRoot.path))
         #expect(!FileManager.default.fileExists(atPath: marker.path))
+
+        let execMarker = fixture.parent.appendingPathComponent("exec-started")
+        let direct = try fixture.agentLease(
+            ["exec", "--resource", "nested", "--", "/usr/bin/touch", execMarker.path],
+            environment: ["AGENTLEASE_HELD_RESOURCES": "held"]
+        )
+        direct.process.waitUntilExit()
+        #expect(direct.process.terminationStatus == 70)
+        #expect(!FileManager.default.fileExists(atPath: fixture.stateRoot.path))
+        #expect(!FileManager.default.fileExists(atPath: execMarker.path))
     }
 
     @Test("Preflight maps missing and non-runnable commands without touching locks")

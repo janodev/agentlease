@@ -152,6 +152,22 @@ struct CLIFixture {
         if let standardInput {
             process.standardInput = standardInput
         }
+        var launchSignals = sigset_t()
+        guard sigemptyset(&launchSignals) == 0,
+              sigaddset(&launchSignals, SIGHUP) == 0,
+              sigaddset(&launchSignals, SIGINT) == 0,
+              sigaddset(&launchSignals, SIGTERM) == 0 else {
+            throw CLITestError.systemCall(operation: "sigset", errorNumber: errno)
+        }
+        var previousMask = sigset_t()
+        let unblockResult = pthread_sigmask(SIG_UNBLOCK, &launchSignals, &previousMask)
+        guard unblockResult == 0 else {
+            throw CLITestError.systemCall(
+                operation: "pthread_sigmask(unblock)",
+                errorNumber: unblockResult
+            )
+        }
+        defer { _ = pthread_sigmask(SIG_SETMASK, &previousMask, nil) }
         try process.run()
         return CLIProcess(
             process: process,
@@ -218,6 +234,19 @@ func waitForMarker(
                 output: process.errorText() + process.outputText()
             )
         }
+        try await clock.sleep(for: .milliseconds(20))
+    }
+    throw CLITestError.markerTimeout(marker.path)
+}
+
+func waitForMarker(
+    _ marker: URL,
+    timeout: Duration = .seconds(5)
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if access(marker.path, F_OK) == 0 { return }
         try await clock.sleep(for: .milliseconds(20))
     }
     throw CLITestError.markerTimeout(marker.path)

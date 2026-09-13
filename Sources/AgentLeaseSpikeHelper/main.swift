@@ -56,6 +56,11 @@ enum AgentLeaseSpikeHelper {
                 throw HelperError.invalidArguments
             }
             try spawnIgnoringGrandchild(markerPath: arguments[1])
+        case "spawn-inheriting-descendant-and-exit":
+            guard arguments.count == 2 else {
+                throw HelperError.invalidArguments
+            }
+            _ = try spawnHelper(arguments: ["hold-inherited-locks", arguments[1]])
         case "write-arguments":
             guard arguments.count == 2 else {
                 throw HelperError.invalidArguments
@@ -141,8 +146,18 @@ enum AgentLeaseSpikeHelper {
     private static func spawnIgnoringGrandchild(markerPath: String) throws {
         ignoreTerminationSignals()
 
+        let processIdentifier = try spawnHelper(arguments: ["hold-ignoring-signals"])
+        try "\(processIdentifier)\n".write(
+            toFile: markerPath,
+            atomically: true,
+            encoding: .utf8
+        )
+        waitForever()
+    }
+
+    private static func spawnHelper(arguments helperArguments: [String]) throws -> pid_t {
         let executablePath = CommandLine.arguments[0]
-        let values = [executablePath, "hold-ignoring-signals"]
+        let values = [executablePath] + helperArguments
         let storage = values.map { strdup($0) }
         defer {
             for pointer in storage {
@@ -166,12 +181,7 @@ enum AgentLeaseSpikeHelper {
         guard result == 0 else {
             throw HelperError.systemCall("posix_spawn", result)
         }
-        try "\(processIdentifier)\n".write(
-            toFile: markerPath,
-            atomically: true,
-            encoding: .utf8
-        )
-        waitForever()
+        return processIdentifier
     }
 
     private static func descriptor(from arguments: [String], at index: Int) throws -> Int32 {
@@ -230,16 +240,41 @@ enum AgentLeaseSpikeHelper {
     }
 
     private static func holdInheritedLocks(arguments: [String]) throws {
-        guard arguments.count == 1 else {
+        guard (1...2).contains(arguments.count) else {
             throw HelperError.invalidArguments
         }
         var inheritedCount = 0
         for descriptor in FileLock.minimumOwnedDescriptor..<256 {
-            if fcntl(descriptor, F_GETFD) >= 0 {
-                inheritedCount += 1
+            let flags = fcntl(descriptor, F_GETFD)
+            guard flags >= 0 else { continue }
+            var path = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard fcntl(descriptor, F_GETPATH, &path) == 0 else {
+                continue
             }
+            let terminator = path.firstIndex(of: 0) ?? path.endIndex
+            let decodedPath = String(
+                decoding: path[..<terminator].map { UInt8(bitPattern: $0) },
+                as: UTF8.self
+            )
+            guard decodedPath.contains("/locks/") else {
+                continue
+            }
+            guard flags & FD_CLOEXEC == 0 else {
+                Darwin.exit(3)
+            }
+            inheritedCount += 1
         }
-        guard inheritedCount > 0 else {
+        let expectedCount: Int?
+        if arguments.count == 2 {
+            guard let value = Int(arguments[1]) else {
+                throw HelperError.invalidArguments
+            }
+            expectedCount = value
+        } else {
+            expectedCount = nil
+        }
+        guard inheritedCount > 0,
+              expectedCount == nil || inheritedCount == expectedCount else {
             Darwin.exit(2)
         }
         try "\(getpid())\n".write(

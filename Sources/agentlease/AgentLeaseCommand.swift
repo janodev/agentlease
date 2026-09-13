@@ -5,6 +5,6 @@ struct AgentLeaseCommand: AsyncParsableCommand {
         commandName: "agentlease",
         abstract: "Run a command while holding named local resources.",
         version: "0.1.0-dev",
-        subcommands: [RunCommand.self]
+        subcommands: [ExecCommand.self, RunCommand.self]
     )
 }
