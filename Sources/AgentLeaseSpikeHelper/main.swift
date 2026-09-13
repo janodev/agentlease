@@ -53,6 +53,16 @@ enum AgentLeaseSpikeHelper {
         case "hold-ignoring-signals":
             ignoreTerminationSignals()
             waitForever()
+        case "hold-lease":
+            try await holdLease(arguments: Array(arguments.dropFirst()))
+        case "hold-lease-after-start":
+            try await holdLease(arguments: Array(arguments.dropFirst()), waitsForStart: true)
+        case "probe-lease":
+            try await probeLease(arguments: Array(arguments.dropFirst()))
+        case "prepare-state":
+            try prepareState(arguments: Array(arguments.dropFirst()), restrictiveUmask: false)
+        case "prepare-state-restrictive":
+            try prepareState(arguments: Array(arguments.dropFirst()), restrictiveUmask: true)
         case "exit":
             let code = try descriptor(from: arguments, at: 1)
             Darwin.exit(code)
@@ -141,6 +151,102 @@ enum AgentLeaseSpikeHelper {
         signal(SIGTERM, SIG_IGN)
     }
 
+    private static func holdLease(
+        arguments: [String],
+        waitsForStart: Bool = false
+    ) async throws {
+        let minimumArgumentCount = waitsForStart ? 5 : 4
+        guard arguments.count >= minimumArgumentCount else {
+            throw HelperError.invalidArguments
+        }
+        let homePath = arguments[0]
+        let startPath = waitsForStart ? arguments[1] : nil
+        let readyIndex = waitsForStart ? 2 : 1
+        let readyPath = arguments[readyIndex]
+        let releasePath = arguments[readyIndex + 1]
+        let resourceValues = Array(arguments.dropFirst(readyIndex + 2))
+
+        if let startPath {
+            try await waitForFile(at: startPath)
+        }
+        let paths = try AgentLeasePaths.open(selectedRoot: homePath)
+        let resources = try ResourceSet(resourceValues)
+        let lease = try await LeaseSet.acquire(
+            resources,
+            paths: paths,
+            waitSeconds: 5,
+            initialMetadata: { resource in
+                LockMetadata(
+                    resourceName: resource.value,
+                    runID: "spike-helper",
+                    coordinatorPID: getpid(),
+                    childPID: nil,
+                    mode: .run,
+                    state: .acquiring,
+                    label: "test helper",
+                    bead: nil,
+                    acquiredAt: RunRecord.timestamp()
+                )
+            }
+        )
+        try "ready\n".write(toFile: readyPath, atomically: true, encoding: .utf8)
+        try await waitForFile(at: releasePath)
+        lease.release()
+    }
+
+    private static func prepareState(arguments: [String], restrictiveUmask: Bool) throws {
+        guard arguments.count == 1 else {
+            throw HelperError.invalidArguments
+        }
+        if restrictiveUmask {
+            _ = umask(0o777)
+        }
+        _ = try AgentLeasePaths.open(selectedRoot: arguments[0])
+    }
+
+    private static func probeLease(arguments: [String]) async throws {
+        guard arguments.count >= 2 else {
+            throw HelperError.invalidArguments
+        }
+        let paths = try AgentLeasePaths.open(selectedRoot: arguments[0])
+        let resources = try ResourceSet(Array(arguments.dropFirst()))
+        do {
+            let lease = try await LeaseSet.acquire(
+                resources,
+                paths: paths,
+                waitSeconds: 0,
+                initialMetadata: { resource in
+                    LockMetadata(
+                        resourceName: resource.value,
+                        runID: "probe-helper",
+                        coordinatorPID: getpid(),
+                        childPID: nil,
+                        mode: .run,
+                        state: .acquiring,
+                        label: nil,
+                        bead: nil,
+                        acquiredAt: RunRecord.timestamp()
+                    )
+                }
+            )
+            lease.release()
+        } catch is LeaseSetError {
+            Darwin.exit(75)
+        }
+    }
+
+    private static func waitForFile(at path: String) async throws {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(10))
+        while clock.now < deadline {
+            if access(path, F_OK) == 0 {
+                return
+            }
+            try await clock.sleep(for: .milliseconds(20))
+        }
+        throw HelperError.markerTimeout(path)
+    }
+
     private static func waitForever() -> Never {
         while true {
             _ = pause()
@@ -152,5 +258,6 @@ private enum HelperError: Error {
     case invalidArguments
     case invalidCommand(String)
     case missingCommand
+    case markerTimeout(String)
     case systemCall(String, Int32)
 }

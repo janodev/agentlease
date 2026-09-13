@@ -7,7 +7,7 @@ tags: [agentlease, macos, implementation]
 
 # AgentLease implementation brief
 
-Status: implementation plan prepared; integration spike not yet run
+Status: Milestones 0 and 1 implemented and verified; Milestones 2 through 4 pending
 
 Date: 2026-09-13
 
