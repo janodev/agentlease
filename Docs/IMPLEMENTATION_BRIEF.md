@@ -7,7 +7,7 @@ tags: [agentlease, macos, implementation]
 
 # AgentLease implementation brief
 
-Status: Milestones 0 through 3 implemented and verified; Milestone 4 pending
+Status: Version 1 implemented and verified; Milestones 0 through 4 complete
 
 Date: 2026-09-13
 

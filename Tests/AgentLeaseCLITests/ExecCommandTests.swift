@@ -273,6 +273,30 @@ struct ExecCommandTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.stateRoot.path))
     }
 
+    @Test("Direct PATH lookup skips an executable in empty and relative entries")
+    func relativePathIsSkipped() throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        let executable = fixture.parent.appendingPathComponent("relative-exec-tool")
+        _ = FileManager.default.createFile(
+            atPath: executable.path,
+            contents: Data("#!/bin/sh\nexit 0\n".utf8)
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o700],
+            ofItemAtPath: executable.path
+        )
+        let process = try fixture.agentLease(
+            ["exec", "--resource", "exec-path", "--", executable.lastPathComponent],
+            currentDirectory: fixture.parent,
+            environment: ["PATH": ":."]
+        )
+        process.process.waitUntilExit()
+
+        #expect(process.process.terminationStatus == 127)
+        #expect(!FileManager.default.fileExists(atPath: fixture.stateRoot.path))
+    }
+
     @Test("A handoff record failure prevents replacement and releases ownership")
     func handoffPublicationFailure() async throws {
         let fixture = try CLIFixture()

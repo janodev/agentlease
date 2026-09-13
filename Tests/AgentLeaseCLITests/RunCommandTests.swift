@@ -132,6 +132,34 @@ struct RunCommandTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.stateRoot.path))
     }
 
+    @Test("Executable preflight precedes unsafe-state failure and both keep their exit codes")
+    func preflightAndUnsafeStatePrecedence() throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        try FileManager.default.createDirectory(
+            at: fixture.stateRoot,
+            withIntermediateDirectories: false
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: fixture.stateRoot.path
+        )
+
+        let missing = try fixture.agentLease([
+            "run", "--resource", "precedence", "--", "/missing/command",
+        ])
+        missing.process.waitUntilExit()
+        #expect(missing.process.terminationStatus == 127)
+
+        let unsafe = try fixture.agentLease([
+            "run", "--resource", "precedence", "--", "/usr/bin/true",
+        ])
+        unsafe.process.waitUntilExit()
+        #expect(unsafe.process.terminationStatus == 70)
+        let runs = fixture.stateRoot.appendingPathComponent("runs")
+        #expect(!FileManager.default.fileExists(atPath: runs.path))
+    }
+
     @Test("PATH lookup skips empty and relative entries")
     func pathPolicy() throws {
         let fixture = try CLIFixture()
@@ -147,6 +175,7 @@ struct RunCommandTests {
         )
         let child = try fixture.agentLease(
             ["run", "--resource", "path", "--", executable.lastPathComponent],
+            currentDirectory: fixture.parent,
             environment: ["PATH": ":."]
         )
         child.process.waitUntilExit()
@@ -418,6 +447,12 @@ struct RunCommandTests {
         #expect(record.state == .signalled)
         #expect(record.receivedSignal == SIGTERM)
         #expect(record.termination == nil)
+
+        let probe = try fixture.helper([
+            "probe-lease", fixture.stateRoot.path, "signals",
+        ])
+        try await waitForProcessExit(probe.process)
+        #expect(probe.process.terminationStatus == 0, "\(probe.errorText())")
     }
 
     @Test("A running-record failure tears down and reaps before releasing ownership")

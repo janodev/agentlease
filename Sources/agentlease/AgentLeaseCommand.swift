@@ -3,8 +3,8 @@ import ArgumentParser
 struct AgentLeaseCommand: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "agentlease",
-        abstract: "Run a command while holding named local resources.",
-        version: "0.1.0-dev",
-        subcommands: [ExecCommand.self, RunCommand.self]
+        abstract: "Coordinate commands with kernel-backed local resource leases.",
+        version: "1.0.0",
+        subcommands: [ExecCommand.self, RunCommand.self, StatusCommand.self]
     )
 }

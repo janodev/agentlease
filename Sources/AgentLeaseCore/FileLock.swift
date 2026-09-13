@@ -64,9 +64,19 @@ public final class FileLock {
 
     private var acquired = false
     private var descriptor: Int32
+    private let metadataWriteFailure: FileLockError?
 
-    public init(resource: ResourceName, paths: AgentLeasePaths) throws {
+    public convenience init(resource: ResourceName, paths: AgentLeasePaths) throws {
+        try self.init(resource: resource, paths: paths, metadataWriteFailure: nil)
+    }
+
+    init(
+        resource: ResourceName,
+        paths: AgentLeasePaths,
+        metadataWriteFailure: FileLockError?
+    ) throws {
         self.resource = resource
+        self.metadataWriteFailure = metadataWriteFailure
         descriptor = try Self.openPersistentLockFile(resource: resource, paths: paths)
     }
 
@@ -204,6 +214,9 @@ public final class FileLock {
     }
 
     public func writeMetadata(_ data: Data) throws {
+        if let metadataWriteFailure {
+            throw metadataWriteFailure
+        }
         guard data.count <= Self.maximumMetadataBytes else {
             throw FileLockError.invalidMetadataSize(data.count)
         }

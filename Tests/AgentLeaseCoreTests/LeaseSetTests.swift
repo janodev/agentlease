@@ -144,6 +144,106 @@ struct LeaseSetTests {
         huge.release()
     }
 
+    @Test("A positive deadline covers the whole set and releases earlier resources")
+    func positiveDeadlineCoversSet() async throws {
+        let fixture = try LeaseFixture()
+        defer { fixture.remove() }
+        let owner = try fixture.launchHolder(resources: ["b"], suffix: "deadline-owner")
+        defer { terminateIfRunning(owner.process) }
+        try await waitForMarker(at: owner.ready, processes: [owner.process])
+        let paths = try AgentLeasePaths.open(selectedRoot: fixture.root.path)
+        let clock = ContinuousClock()
+        let start = clock.now
+
+        do {
+            _ = try await LeaseSet.acquire(
+                ResourceSet(["b", "a"]),
+                paths: paths,
+                waitSeconds: 0.1,
+                initialMetadata: fixture.metadata
+            )
+            Issue.record("positive deadline unexpectedly acquired the busy set")
+        } catch let error as LeaseSetError {
+            #expect(error == .timedOut("b"))
+        }
+        #expect(start.duration(to: clock.now) < .seconds(1))
+
+        let releasedProbe = try launchAgentLeaseHelper([
+            "probe-lease", fixture.root.path, "a",
+        ])
+        try await waitForExit(releasedProbe)
+        #expect(releasedProbe.process.terminationStatus == 0, "\(releasedProbe.readOutput())")
+        try makeMarker(at: owner.release)
+        try await waitForExit(owner.process)
+    }
+
+    @Test("Metadata failures remain observable without blocking launch or changing its result")
+    func metadataFailureIsBestEffort() async throws {
+        let fixture = try LeaseFixture()
+        defer { fixture.remove() }
+        let paths = try AgentLeasePaths.open(selectedRoot: fixture.root.path)
+        let injectedFailure = FileLockError.systemCall(
+            operation: "injectedMetadataWrite",
+            resource: "metadata-failure",
+            errorNumber: EIO
+        )
+        let lease = try await LeaseSet.acquire(
+            ResourceSet(["metadata-failure"]),
+            paths: paths,
+            waitSeconds: 0,
+            initialMetadata: fixture.metadata,
+            metadataWriteFailure: injectedFailure
+        )
+        defer { lease.release() }
+        #expect(lease.takeMetadataWriteIssues().count == 1)
+
+        let parent = fixture.root.deletingLastPathComponent()
+        let started = parent.appendingPathComponent("metadata-child-started")
+        let release = parent.appendingPathComponent("metadata-child-release")
+        let helper = try agentLeaseHelperPath()
+        let task = Task {
+            try await SupervisedSubprocess.run(
+                executablePath: helper,
+                arguments: [
+                    helper,
+                    "wait-for-marker-and-exit",
+                    release.path,
+                    "23",
+                ],
+                inheritedDescriptors: lease.inheritedDescriptors
+            ) { _ in
+                try makeMarker(at: started)
+            }
+        }
+        defer { task.cancel() }
+        try await waitForMarker(at: started)
+
+        let heldProbe = try launchAgentLeaseHelper([
+            "probe-lease", fixture.root.path, "metadata-failure",
+        ])
+        try await waitForExit(heldProbe)
+        #expect(heldProbe.process.terminationStatus == 75, "\(heldProbe.readOutput())")
+        lease.updateMetadata { resource in
+            fixture.metadata(resource: resource).replacing(state: .running)
+        }
+        #expect(lease.takeMetadataWriteIssues().count == 1)
+
+        try makeMarker(at: release)
+        let result = try await task.value
+        #expect(result.termination == .exited(23))
+        lease.updateMetadata { resource in
+            fixture.metadata(resource: resource).replacing(state: .exited)
+        }
+        #expect(lease.takeMetadataWriteIssues().count == 1)
+        lease.release()
+
+        let freeProbe = try launchAgentLeaseHelper([
+            "probe-lease", fixture.root.path, "metadata-failure",
+        ])
+        try await waitForExit(freeProbe)
+        #expect(freeProbe.process.terminationStatus == 0, "\(freeProbe.readOutput())")
+    }
+
     @Test("Acquisition writes bounded diagnostic metadata")
     func acquisitionMetadata() async throws {
         let fixture = try LeaseFixture()

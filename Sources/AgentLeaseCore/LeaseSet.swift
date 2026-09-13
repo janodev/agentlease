@@ -79,6 +79,42 @@ public final class LeaseSet: Sendable {
         initialMetadata: @Sendable (ResourceName) -> LockMetadata,
         onContention: @Sendable (ResourceName, BoundedMetadataRead) -> Void = { _, _ in }
     ) async throws -> LeaseSet {
+        try await acquireInternal(
+            resources,
+            paths: paths,
+            waitSeconds: waitSeconds,
+            initialMetadata: initialMetadata,
+            metadataWriteFailure: nil,
+            onContention: onContention
+        )
+    }
+
+    static func acquire(
+        _ resources: ResourceSet,
+        paths: AgentLeasePaths,
+        waitSeconds: Double?,
+        initialMetadata: @Sendable (ResourceName) -> LockMetadata,
+        metadataWriteFailure: FileLockError,
+        onContention: @Sendable (ResourceName, BoundedMetadataRead) -> Void = { _, _ in }
+    ) async throws -> LeaseSet {
+        try await acquireInternal(
+            resources,
+            paths: paths,
+            waitSeconds: waitSeconds,
+            initialMetadata: initialMetadata,
+            metadataWriteFailure: metadataWriteFailure,
+            onContention: onContention
+        )
+    }
+
+    private static func acquireInternal(
+        _ resources: ResourceSet,
+        paths: AgentLeasePaths,
+        waitSeconds: Double?,
+        initialMetadata: @Sendable (ResourceName) -> LockMetadata,
+        metadataWriteFailure: FileLockError?,
+        onContention: @Sendable (ResourceName, BoundedMetadataRead) -> Void
+    ) async throws -> LeaseSet {
         if let waitSeconds,
            !waitSeconds.isFinite || waitSeconds < 0 {
             throw LeaseSetError.invalidWaitSeconds(waitSeconds)
@@ -88,7 +124,13 @@ public final class LeaseSet: Sendable {
         var openedLocks: [FileLock] = []
         do {
             for resource in resources.resources {
-                openedLocks.append(try FileLock(resource: resource, paths: paths))
+                openedLocks.append(
+                    try FileLock(
+                        resource: resource,
+                        paths: paths,
+                        metadataWriteFailure: metadataWriteFailure
+                    )
+                )
             }
         } catch {
             for lock in openedLocks.reversed() {

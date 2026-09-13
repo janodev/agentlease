@@ -61,6 +61,7 @@ struct CLIFixture {
 
     func agentLease(
         _ arguments: [String],
+        currentDirectory: URL? = nil,
         environment additions: [String: String] = [:],
         standardError suppliedStandardError: Pipe? = nil,
         standardInput: Any? = nil
@@ -73,6 +74,7 @@ struct CLIFixture {
         return try launch(
             executable: builtExecutable(named: "agentlease"),
             arguments: arguments,
+            currentDirectory: currentDirectory,
             environment: environment,
             standardError: suppliedStandardError,
             standardInput: standardInput
@@ -83,6 +85,7 @@ struct CLIFixture {
         try launch(
             executable: builtExecutable(named: "agentlease-spike-helper"),
             arguments: arguments,
+            currentDirectory: nil,
             environment: ProcessInfo.processInfo.environment,
             standardError: nil,
             standardInput: nil
@@ -137,6 +140,7 @@ struct CLIFixture {
     private func launch(
         executable: String,
         arguments: [String],
+        currentDirectory: URL?,
         environment: [String: String],
         standardError suppliedStandardError: Pipe?,
         standardInput: Any?
@@ -146,6 +150,7 @@ struct CLIFixture {
         let standardOutput = Pipe()
         process.executableURL = URL(fileURLWithPath: executable)
         process.arguments = arguments
+        process.currentDirectoryURL = currentDirectory
         process.environment = environment
         process.standardError = standardError
         process.standardOutput = standardOutput

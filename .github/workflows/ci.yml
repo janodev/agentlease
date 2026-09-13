@@ -16,7 +16,7 @@ jobs:
           test "$(sw_vers -productVersion | cut -d. -f1)" -ge 27
           xcodebuild -version | grep '^Xcode 27\.'
           xcodebuild -version
-          swift --version
+          swift --version | grep 'Apple Swift version 6\.4'
       - name: Build and test
         run: make test
       - name: Check whitespace
