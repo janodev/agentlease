@@ -45,11 +45,23 @@ enum AgentLeaseSpikeHelper {
         case "raise-interrupt":
             raise(SIGINT)
             Darwin.exit(99)
+        case "wait-for-marker-and-exit":
+            guard arguments.count == 3 else {
+                throw HelperError.invalidArguments
+            }
+            try await waitForFile(at: arguments[1])
+            Darwin.exit(try descriptor(from: arguments, at: 2))
         case "spawn-ignoring-grandchild":
             guard arguments.count == 2 else {
                 throw HelperError.invalidArguments
             }
             try spawnIgnoringGrandchild(markerPath: arguments[1])
+        case "write-arguments":
+            guard arguments.count == 2 else {
+                throw HelperError.invalidArguments
+            }
+            let data = try JSONEncoder().encode(CommandLine.arguments)
+            try data.write(to: URL(fileURLWithPath: arguments[1]))
         case "hold-ignoring-signals":
             ignoreTerminationSignals()
             waitForever()
@@ -57,6 +69,8 @@ enum AgentLeaseSpikeHelper {
             try await holdLease(arguments: Array(arguments.dropFirst()))
         case "hold-lease-after-start":
             try await holdLease(arguments: Array(arguments.dropFirst()), waitsForStart: true)
+        case "hold-inherited-locks":
+            try holdInheritedLocks(arguments: Array(arguments.dropFirst()))
         case "probe-lease":
             try await probeLease(arguments: Array(arguments.dropFirst()))
         case "prepare-state":
@@ -127,11 +141,32 @@ enum AgentLeaseSpikeHelper {
     private static func spawnIgnoringGrandchild(markerPath: String) throws {
         ignoreTerminationSignals()
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        process.arguments = ["hold-ignoring-signals"]
-        try process.run()
-        try "\(process.processIdentifier)\n".write(
+        let executablePath = CommandLine.arguments[0]
+        let values = [executablePath, "hold-ignoring-signals"]
+        let storage = values.map { strdup($0) }
+        defer {
+            for pointer in storage {
+                free(pointer)
+            }
+        }
+        var arguments = storage + [nil]
+        var processIdentifier: pid_t = 0
+        let result = executablePath.withCString { executable in
+            arguments.withUnsafeMutableBufferPointer { arguments in
+                posix_spawn(
+                    &processIdentifier,
+                    executable,
+                    nil,
+                    nil,
+                    arguments.baseAddress,
+                    environ
+                )
+            }
+        }
+        guard result == 0 else {
+            throw HelperError.systemCall("posix_spawn", result)
+        }
+        try "\(processIdentifier)\n".write(
             toFile: markerPath,
             atomically: true,
             encoding: .utf8
@@ -192,6 +227,27 @@ enum AgentLeaseSpikeHelper {
         try "ready\n".write(toFile: readyPath, atomically: true, encoding: .utf8)
         try await waitForFile(at: releasePath)
         lease.release()
+    }
+
+    private static func holdInheritedLocks(arguments: [String]) throws {
+        guard arguments.count == 1 else {
+            throw HelperError.invalidArguments
+        }
+        var inheritedCount = 0
+        for descriptor in FileLock.minimumOwnedDescriptor..<256 {
+            if fcntl(descriptor, F_GETFD) >= 0 {
+                inheritedCount += 1
+            }
+        }
+        guard inheritedCount > 0 else {
+            Darwin.exit(2)
+        }
+        try "\(getpid())\n".write(
+            toFile: arguments[0],
+            atomically: true,
+            encoding: .utf8
+        )
+        waitForever()
     }
 
     private static func prepareState(arguments: [String], restrictiveUmask: Bool) throws {

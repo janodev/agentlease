@@ -31,8 +31,8 @@ public enum AtomicJSONStoreError: Error, Equatable, Sendable {
     }
 }
 
-public final class AtomicJSONStore {
-    enum FailurePoint: Equatable {
+public final class AtomicJSONStore: Sendable {
+    enum FailurePoint: Equatable, Sendable {
         case directorySync
         case fileSync
         case rename

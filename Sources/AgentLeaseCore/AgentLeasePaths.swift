@@ -62,6 +62,10 @@ public final class AgentLeasePaths: @unchecked Sendable {
     public static func open(
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> AgentLeasePaths {
+        try open(selectedRoot: selectedRoot(environment: environment))
+    }
+
+    static func selectedRoot(environment: [String: String]) throws -> String {
         let selectedRoot: String
         if let explicitRoot = environment[homeEnvironmentKey] {
             guard !explicitRoot.isEmpty else {
@@ -73,7 +77,7 @@ public final class AgentLeasePaths: @unchecked Sendable {
         } else {
             selectedRoot = try effectiveUserHomeDirectory() + "/.agentlease"
         }
-        return try open(selectedRoot: selectedRoot)
+        return selectedRoot
     }
 
     public static func open(selectedRoot: String) throws -> AgentLeasePaths {

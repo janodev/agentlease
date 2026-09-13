@@ -52,6 +52,9 @@ AgentLease therefore leaves `createSession` false. Its Darwin
 `preSpawnProcessConfigurator` preserves the dependency's existing attribute
 flags, adds `POSIX_SPAWN_SETSID`, and adds one checked
 `posix_spawn_file_actions_addinherit_np` operation for each owned descriptor.
+It also checks that `SIGINT`, `SIGTERM`, and `SIGHUP` are present in the spawn
+default set and absent from the spawn mask, rather than relying only on the
+dependency's unchecked setup calls.
 This uses the direct `posix_spawn` path and creates a new session atomically
 without widening descriptor inheritance in the coordinator.
 

@@ -44,5 +44,9 @@ let package = Package(
             name: "AgentLeaseCoreTests",
             dependencies: ["AgentLeaseCore"]
         ),
+        .testTarget(
+            name: "AgentLeaseCLITests",
+            dependencies: ["AgentLeaseCore"]
+        ),
     ]
 )

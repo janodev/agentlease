@@ -16,23 +16,23 @@ struct LeaseSetTests {
         let sharedProbe = try launchAgentLeaseHelper([
             "probe-lease", fixture.root.path, "shared",
         ])
-        sharedProbe.process.waitUntilExit()
+        try await waitForExit(sharedProbe)
         #expect(sharedProbe.process.terminationStatus == 75, "\(sharedProbe.readOutput())")
 
         let independentProbe = try launchAgentLeaseHelper([
             "probe-lease", fixture.root.path, "independent",
         ])
-        independentProbe.process.waitUntilExit()
+        try await waitForExit(independentProbe)
         #expect(independentProbe.process.terminationStatus == 0, "\(independentProbe.readOutput())")
 
         try makeMarker(at: owner.release)
-        owner.process.process.waitUntilExit()
+        try await waitForExit(owner.process)
         #expect(owner.process.process.terminationStatus == 0, "\(owner.process.readOutput())")
 
         let releasedProbe = try launchAgentLeaseHelper([
             "probe-lease", fixture.root.path, "shared",
         ])
-        releasedProbe.process.waitUntilExit()
+        try await waitForExit(releasedProbe)
         #expect(releasedProbe.process.terminationStatus == 0, "\(releasedProbe.readOutput())")
     }
 
@@ -65,12 +65,12 @@ struct LeaseSetTests {
         let winner = firstReady == first.ready ? first : second
         let follower = firstReady == first.ready ? second : first
         try makeMarker(at: winner.release)
-        winner.process.process.waitUntilExit()
+        try await waitForExit(winner.process)
         #expect(winner.process.process.terminationStatus == 0, "\(winner.process.readOutput())")
 
         try await waitForMarker(at: follower.ready, processes: [follower.process])
         try makeMarker(at: follower.release)
-        follower.process.process.waitUntilExit()
+        try await waitForExit(follower.process)
         #expect(follower.process.process.terminationStatus == 0, "\(follower.process.readOutput())")
     }
 
@@ -99,7 +99,7 @@ struct LeaseSetTests {
         let blockedProbe = try launchAgentLeaseHelper([
             "probe-lease", fixture.root.path, "a",
         ])
-        blockedProbe.process.waitUntilExit()
+        try await waitForExit(blockedProbe)
         #expect(blockedProbe.process.terminationStatus == 75, "\(blockedProbe.readOutput())")
 
         task.cancel()
@@ -115,10 +115,10 @@ struct LeaseSetTests {
         let releasedProbe = try launchAgentLeaseHelper([
             "probe-lease", fixture.root.path, "a",
         ])
-        releasedProbe.process.waitUntilExit()
+        try await waitForExit(releasedProbe)
         #expect(releasedProbe.process.terminationStatus == 0, "\(releasedProbe.readOutput())")
         try makeMarker(at: secondOwner.release)
-        secondOwner.process.process.waitUntilExit()
+        try await waitForExit(secondOwner.process)
     }
 
     @Test("Zero wait probes once and huge finite deadlines do not overflow")

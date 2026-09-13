@@ -5,6 +5,20 @@ import Testing
 
 @Suite("Safe state paths", .serialized)
 struct AgentLeasePathsTests {
+    @Test("Default root ignores HOME and explicit AgentLease home remains authoritative")
+    func stateRootSelection() throws {
+        let defaultRoot = try AgentLeasePaths.selectedRoot(
+            environment: ["HOME": "/tmp/conflicting-home"]
+        )
+        #expect(defaultRoot.hasSuffix("/.agentlease"))
+        #expect(!defaultRoot.hasPrefix("/tmp/conflicting-home/"))
+        #expect(
+            try AgentLeasePaths.selectedRoot(
+                environment: ["AGENTLEASE_HOME": "/tmp/explicit-agentlease"]
+            ) == "/tmp/explicit-agentlease"
+        )
+    }
+
     @Test("Creates only the final root and managed directories with exact modes")
     func createsExactLayoutUnderRestrictiveUmask() throws {
         let parent = try makeAgentLeaseTemporaryDirectory()

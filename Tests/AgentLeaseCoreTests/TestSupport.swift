@@ -5,6 +5,7 @@ enum AgentLeaseTestError: Error, CustomStringConvertible {
     case helperNotFound
     case markerTimeout(String)
     case processFailed(String)
+    case processTimeout(Int32)
     case systemCall(String, Int32)
 
     var description: String {
@@ -15,6 +16,8 @@ enum AgentLeaseTestError: Error, CustomStringConvertible {
             "timed out waiting for marker at \(path)"
         case .processFailed(let message):
             message
+        case .processTimeout(let processIdentifier):
+            "process \(processIdentifier) did not exit"
         case .systemCall(let operation, let code):
             "\(operation) failed with errno \(code)"
         }
@@ -93,7 +96,6 @@ func waitForMarker(
             return
         }
         if let exited = processes.first(where: { !$0.process.isRunning }) {
-            exited.process.waitUntilExit()
             throw AgentLeaseTestError.processFailed(
                 "helper exited \(exited.process.terminationStatus):\n\(exited.readOutput())"
             )
@@ -115,7 +117,6 @@ func waitForEitherMarker(
         if access(first.path, F_OK) == 0 { return first }
         if access(second.path, F_OK) == 0 { return second }
         if let exited = processes.first(where: { !$0.process.isRunning }) {
-            exited.process.waitUntilExit()
             throw AgentLeaseTestError.processFailed(
                 "helper exited \(exited.process.terminationStatus):\n\(exited.readOutput())"
             )
@@ -123,6 +124,21 @@ func waitForEitherMarker(
         try await clock.sleep(for: .milliseconds(20))
     }
     throw AgentLeaseTestError.markerTimeout("\(first.path) or \(second.path)")
+}
+
+func waitForExit(
+    _ helper: HelperProcess,
+    timeout: Duration = .seconds(5)
+) async throws {
+    let clock = ContinuousClock()
+    let deadline = clock.now.advanced(by: timeout)
+    while clock.now < deadline {
+        if !helper.process.isRunning {
+            return
+        }
+        try await clock.sleep(for: .milliseconds(20))
+    }
+    throw AgentLeaseTestError.processTimeout(helper.process.processIdentifier)
 }
 
 func terminateIfRunning(_ helper: HelperProcess) {

@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import Synchronization
 
 public enum LeaseSetError: Error, Equatable, Sendable {
     case invalidWaitSeconds(Double)
@@ -41,14 +42,18 @@ public struct MetadataWriteIssue: Equatable, Sendable {
     }
 }
 
-public final class LeaseSet {
-    public private(set) var metadataWriteIssues: [MetadataWriteIssue]
+public final class LeaseSet: Sendable {
+    /// `FileLock` values become reachable only through `Mutex` after initialization.
+    /// No unprotected aliases escape this state container.
+    private struct State: @unchecked Sendable {
+        var locks: [FileLock]
+        var metadataWriteIssues: [MetadataWriteIssue]
+    }
 
-    private var locks: [FileLock]
+    private let state: Mutex<State>
 
     private init(locks: [FileLock], metadataWriteIssues: [MetadataWriteIssue]) {
-        self.locks = locks
-        self.metadataWriteIssues = metadataWriteIssues
+        state = Mutex(State(locks: locks, metadataWriteIssues: metadataWriteIssues))
     }
 
     deinit {
@@ -56,11 +61,15 @@ public final class LeaseSet {
     }
 
     public var inheritedDescriptors: [Int32] {
-        locks.compactMap(\.inheritedDescriptor)
+        state.withLock { $0.locks.compactMap(\.inheritedDescriptor) }
+    }
+
+    public var metadataWriteIssues: [MetadataWriteIssue] {
+        state.withLock { $0.metadataWriteIssues }
     }
 
     public var resources: [ResourceName] {
-        locks.map(\.resource)
+        state.withLock { $0.locks.map(\.resource) }
     }
 
     public static func acquire(
@@ -137,28 +146,42 @@ public final class LeaseSet {
     }
 
     public func clearCloseOnExec() throws {
-        for lock in locks {
-            try lock.clearCloseOnExec()
+        try state.withLock { state in
+            for lock in state.locks {
+                try lock.clearCloseOnExec()
+            }
         }
     }
 
     public func release() {
-        for lock in locks.reversed() {
-            lock.release()
+        state.withLock { state in
+            for lock in state.locks.reversed() {
+                lock.release()
+            }
+            state.locks.removeAll(keepingCapacity: false)
         }
-        locks.removeAll(keepingCapacity: false)
+    }
+
+    public func takeMetadataWriteIssues() -> [MetadataWriteIssue] {
+        state.withLock { state in
+            let issues = state.metadataWriteIssues
+            state.metadataWriteIssues.removeAll(keepingCapacity: true)
+            return issues
+        }
     }
 
     public func updateMetadata(
         _ metadata: @Sendable (ResourceName) -> LockMetadata
     ) {
-        var transitionIssues: [MetadataWriteIssue] = []
-        for lock in locks {
-            if let issue = Self.writeMetadata(metadata(lock.resource), to: lock) {
-                transitionIssues.append(issue)
+        state.withLock { state in
+            var transitionIssues: [MetadataWriteIssue] = []
+            for lock in state.locks {
+                if let issue = Self.writeMetadata(metadata(lock.resource), to: lock) {
+                    transitionIssues.append(issue)
+                }
             }
+            state.metadataWriteIssues.append(contentsOf: transitionIssues)
         }
-        metadataWriteIssues.append(contentsOf: transitionIssues)
     }
 
     private static func checkDescriptorLimit(resourceCount: Int) throws {
