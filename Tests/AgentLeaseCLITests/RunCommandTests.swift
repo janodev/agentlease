@@ -5,6 +5,107 @@ import Testing
 
 @Suite("agentlease run", .serialized)
 struct RunCommandTests {
+    @Test("Shared holders overlap while an exclusive holder waits")
+    func sharedResourceCompatibility() async throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        let helper = try builtExecutable(named: "agentlease-spike-helper")
+        let release = fixture.parent.appendingPathComponent("release-shared-owner")
+        let owner = try fixture.agentLease([
+            "run", "--shared-resource", "shared-cli", "--", helper,
+            "wait-for-marker-and-exit", release.path, "0",
+        ])
+        defer { terminate(owner.process) }
+        _ = try await fixture.waitForRecord(
+            coordinatorPID: owner.process.processIdentifier,
+            state: .running,
+            process: owner
+        )
+
+        let status = try fixture.agentLease(["status", "--json"])
+        try await waitForProcessExit(status.process)
+        let statusReport = try JSONDecoder().decode(
+            StatusReport.self,
+            from: status.standardOutput.fileHandleForReading.readDataToEndOfFile()
+        )
+        #expect(statusReport.schemaVersion == 2)
+        #expect(statusReport.entries.first?.availability == .held)
+        #expect(statusReport.entries.first?.heldMode == .shared)
+        #expect(statusReport.entries.first?.metadataStatus == .absent)
+
+        let peer = try fixture.agentLease([
+            "run", "--shared-resource", "shared-cli", "--", "/usr/bin/true",
+        ])
+        try await waitForProcessExit(peer.process)
+        #expect(peer.process.terminationStatus == 0, "\(peer.errorText())")
+
+        let exclusive = try fixture.agentLease([
+            "run", "--resource", "shared-cli", "--wait-seconds", "0", "--",
+            "/usr/bin/true",
+        ])
+        try await waitForProcessExit(exclusive.process)
+        #expect(exclusive.process.terminationStatus == 75, "\(exclusive.errorText())")
+
+        try createMarker(release)
+        try await waitForProcessExit(owner.process)
+        #expect(owner.process.terminationStatus == 0, "\(owner.errorText())")
+    }
+
+    @Test("Run exports a verified sorted lease descriptor manifest")
+    func leaseDescriptorManifest() throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        let helper = try builtExecutable(named: "agentlease-spike-helper")
+        let output = fixture.parent.appendingPathComponent("run-manifest.json")
+        let child = try fixture.agentLease(
+            [
+                "run",
+                "--resource", "z:exclusive",
+                "--shared-resource", "a:shared",
+                "--", helper, "verify-lease-manifest", output.path,
+            ],
+            environment: [InheritedLeaseManifest.environmentKey: "stale"]
+        )
+        child.process.waitUntilExit()
+
+        #expect(child.process.terminationStatus == 0, "\(child.errorText())")
+        let value = try String(contentsOf: output, encoding: .utf8)
+        let manifest = try InheritedLeaseManifest.decodeEnvironmentValue(value)
+        #expect(manifest.schemaVersion == 1)
+        #expect(manifest.leases.map(\.resource) == ["a:shared", "z:exclusive"])
+        #expect(manifest.leases.map(\.mode) == [.shared, .exclusive])
+        #expect(manifest.leases.allSatisfy { $0.descriptor >= 64 })
+        let canonicalRoot = try AgentLeasePaths.open(
+            selectedRoot: fixture.stateRoot.path
+        ).rootPath
+        #expect(manifest.leases.map(\.path) == [
+            canonicalRoot + "/locks/" + (try ResourceName("a:shared")).lockFileName,
+            canonicalRoot + "/locks/" + (try ResourceName("z:exclusive")).lockFileName,
+        ])
+
+        let record = try #require(fixture.readRecords().first)
+        #expect(record.schemaVersion == 2)
+        let expectedLeases = try ResourceSet(
+            exclusive: ["z:exclusive"],
+            shared: ["a:shared"]
+        ).leases
+        #expect(record.resourceLeases == expectedLeases)
+    }
+
+    @Test("Duplicate resources across lease modes are rejected before state creation")
+    func rejectsCrossModeDuplicate() throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        let child = try fixture.agentLease([
+            "run", "--resource", "duplicate", "--shared-resource", "duplicate",
+            "--", "/usr/bin/true",
+        ])
+        child.process.waitUntilExit()
+
+        #expect(child.process.terminationStatus == 64)
+        #expect(!FileManager.default.fileExists(atPath: fixture.stateRoot.path))
+    }
+
     @Test("Preserves argv, child exit status, records, and attached output streams")
     func argumentsRecordsAndOutput() throws {
         let fixture = try CLIFixture()
@@ -593,6 +694,108 @@ struct RunCommandTests {
             try await waitForProcessExit(probe.process)
             acquired = probe.process.terminationStatus == 0
             if !acquired {
+                try await clock.sleep(for: .milliseconds(20))
+            }
+        }
+        #expect(acquired)
+    }
+
+    @Test("A mixed-mode child retains its declared leases after coordinator SIGKILL")
+    func mixedModeSupervisorDeathRetention() async throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        let exclusiveResource = "crash:mixed:exclusive"
+        let sharedResource = "crash:mixed:shared"
+        let childMarker = fixture.parent.appendingPathComponent("mixed-child.pid")
+        let manifestOutput = fixture.parent.appendingPathComponent("mixed-manifest.json")
+        let helper = try builtExecutable(named: "agentlease-spike-helper")
+        let script = """
+        set -eu
+        printf '%s' "$AGENTLEASE_LEASE_DESCRIPTORS" > "$1"
+        exec "$2" hold-inherited-locks "$3" 2
+        """
+        let coordinator = try fixture.agentLease([
+            "run",
+            "--shared-resource", sharedResource,
+            "--resource", exclusiveResource,
+            "--", "/bin/sh", "-c", script, "agentlease-mixed-child",
+            manifestOutput.path, helper, childMarker.path,
+        ])
+        defer { terminate(coordinator.process) }
+        try await waitForMarker(childMarker, process: coordinator)
+        let childPID = try readProcessIdentifier(from: childMarker)
+        var childNeedsTermination = true
+        defer {
+            if childNeedsTermination {
+                _ = kill(childPID, SIGKILL)
+            }
+        }
+
+        let manifestValue = try String(contentsOf: manifestOutput, encoding: .utf8)
+        let manifest = try InheritedLeaseManifest.decodeEnvironmentValue(manifestValue)
+        #expect(manifest.leases.map(\.resource) == [exclusiveResource, sharedResource])
+        #expect(manifest.leases.map(\.mode) == [.exclusive, .shared])
+
+        func expectCompatibility(_ phase: String) async throws {
+            let sharedPeer = try fixture.agentLease([
+                "run", "--shared-resource", sharedResource, "--wait-seconds", "0",
+                "--", "/usr/bin/true",
+            ])
+            try await waitForProcessExit(sharedPeer.process)
+            #expect(
+                sharedPeer.process.terminationStatus == 0,
+                "\(phase): shared peer failed: \(sharedPeer.errorText())"
+            )
+
+            let exclusiveContender = try fixture.agentLease([
+                "run", "--resource", sharedResource, "--wait-seconds", "0",
+                "--", "/usr/bin/true",
+            ])
+            try await waitForProcessExit(exclusiveContender.process)
+            #expect(
+                exclusiveContender.process.terminationStatus == 75,
+                "\(phase): exclusive contender result: \(exclusiveContender.errorText())"
+            )
+
+            let sharedContender = try fixture.agentLease([
+                "run", "--shared-resource", exclusiveResource, "--wait-seconds", "0",
+                "--", "/usr/bin/true",
+            ])
+            try await waitForProcessExit(sharedContender.process)
+            #expect(
+                sharedContender.process.terminationStatus == 75,
+                "\(phase): shared contender result: \(sharedContender.errorText())"
+            )
+        }
+
+        try await expectCompatibility("before coordinator death")
+        #expect(kill(coordinator.process.processIdentifier, SIGKILL) == 0)
+        try await waitForProcessExit(coordinator.process)
+        try await expectCompatibility("after coordinator death")
+
+        let childKillResult = kill(childPID, SIGKILL)
+        #expect(childKillResult == 0)
+        if childKillResult == 0 {
+            childNeedsTermination = false
+        }
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        var acquired = false
+        while clock.now < deadline, !acquired {
+            let probe = try fixture.agentLease([
+                "run",
+                "--resource", sharedResource,
+                "--resource", exclusiveResource,
+                "--wait-seconds", "0",
+                "--", "/usr/bin/true",
+            ])
+            try await waitForProcessExit(probe.process)
+            acquired = probe.process.terminationStatus == 0
+            if !acquired {
+                #expect(
+                    probe.process.terminationStatus == 75,
+                    "post-child probe result: \(probe.errorText())"
+                )
                 try await clock.sleep(for: .milliseconds(20))
             }
         }

@@ -31,11 +31,35 @@ public struct RunTermination: Codable, Equatable, Sendable {
 }
 
 public struct RunRecord: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case argumentCommitment
+        case arguments
+        case bead
+        case childPID
+        case coordinatorPID
+        case executable
+        case failure
+        case finishedAt
+        case label
+        case mode
+        case receivedSignal
+        case resolvedExecutable
+        case resourceLeases
+        case resources
+        case runID
+        case schemaVersion
+        case startedAt
+        case state
+        case termination
+        case workingDirectory
+    }
+
     public let schemaVersion: Int
     public let runID: String
     public let mode: ExecutionMode
     public var state: RunState
     public let resources: [String]
+    public let resourceLeases: [ResourceLease]
     public let label: String?
     public let bead: String?
     public let coordinatorPID: Int32
@@ -52,11 +76,12 @@ public struct RunRecord: Codable, Equatable, Sendable {
     public var failure: AgentLeaseFailure?
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         runID: String,
         mode: ExecutionMode,
         state: RunState,
         resources: [String],
+        resourceLeases: [ResourceLease]? = nil,
         label: String?,
         bead: String?,
         coordinatorPID: Int32,
@@ -77,6 +102,10 @@ public struct RunRecord: Codable, Equatable, Sendable {
         self.mode = mode
         self.state = state
         self.resources = resources
+        self.resourceLeases = resourceLeases
+            ?? resources.compactMap { value in
+                try? ResourceLease(resource: ResourceName(value), mode: .exclusive)
+            }
         self.label = label
         self.bead = bead
         self.coordinatorPID = coordinatorPID
@@ -93,6 +122,39 @@ public struct RunRecord: Codable, Equatable, Sendable {
         self.failure = failure
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        runID = try container.decode(String.self, forKey: .runID)
+        mode = try container.decode(ExecutionMode.self, forKey: .mode)
+        state = try container.decode(RunState.self, forKey: .state)
+        resources = try container.decode([String].self, forKey: .resources)
+        if schemaVersion == 1 {
+            resourceLeases = try resources.map { value in
+                ResourceLease(resource: try ResourceName(value), mode: .exclusive)
+            }
+        } else {
+            resourceLeases = try container.decode(
+                [ResourceLease].self,
+                forKey: .resourceLeases
+            )
+        }
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        bead = try container.decodeIfPresent(String.self, forKey: .bead)
+        coordinatorPID = try container.decode(Int32.self, forKey: .coordinatorPID)
+        childPID = try container.decodeIfPresent(Int32.self, forKey: .childPID)
+        workingDirectory = try container.decode(String.self, forKey: .workingDirectory)
+        executable = try container.decode(String.self, forKey: .executable)
+        resolvedExecutable = try container.decode(String.self, forKey: .resolvedExecutable)
+        argumentCommitment = try container.decode(String.self, forKey: .argumentCommitment)
+        arguments = try container.decodeIfPresent([String].self, forKey: .arguments)
+        startedAt = try container.decode(String.self, forKey: .startedAt)
+        finishedAt = try container.decodeIfPresent(String.self, forKey: .finishedAt)
+        receivedSignal = try container.decodeIfPresent(Int32.self, forKey: .receivedSignal)
+        termination = try container.decodeIfPresent(RunTermination.self, forKey: .termination)
+        failure = try container.decodeIfPresent(AgentLeaseFailure.self, forKey: .failure)
+    }
+
     public static func timestamp() -> String {
         Date.ISO8601FormatStyle(includingFractionalSeconds: true).format(Date())
     }
@@ -104,6 +166,7 @@ public struct RunRecord: Codable, Equatable, Sendable {
         try container.encode(mode, forKey: .mode)
         try container.encode(state, forKey: .state)
         try container.encode(resources, forKey: .resources)
+        try container.encode(resourceLeases, forKey: .resourceLeases)
         try container.encodeNullable(label, forKey: .label)
         try container.encodeNullable(bead, forKey: .bead)
         try container.encode(coordinatorPID, forKey: .coordinatorPID)
@@ -122,8 +185,23 @@ public struct RunRecord: Codable, Equatable, Sendable {
 }
 
 public struct LockMetadata: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case acquiredAt
+        case bead
+        case childPID
+        case coordinatorPID
+        case label
+        case leaseMode
+        case mode
+        case resourceName
+        case runID
+        case schemaVersion
+        case state
+    }
+
     public let schemaVersion: Int
     public let resourceName: String
+    public let leaseMode: LeaseMode
     public let runID: String
     public let coordinatorPID: Int32
     public let childPID: Int32?
@@ -134,8 +212,9 @@ public struct LockMetadata: Codable, Equatable, Sendable {
     public let acquiredAt: String
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         resourceName: String,
+        leaseMode: LeaseMode = .exclusive,
         runID: String,
         coordinatorPID: Int32,
         childPID: Int32?,
@@ -147,6 +226,7 @@ public struct LockMetadata: Codable, Equatable, Sendable {
     ) {
         self.schemaVersion = schemaVersion
         self.resourceName = resourceName
+        self.leaseMode = leaseMode
         self.runID = runID
         self.coordinatorPID = coordinatorPID
         self.childPID = childPID
@@ -157,6 +237,23 @@ public struct LockMetadata: Codable, Equatable, Sendable {
         self.acquiredAt = acquiredAt
     }
 
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        resourceName = try container.decode(String.self, forKey: .resourceName)
+        leaseMode = schemaVersion == 1
+            ? .exclusive
+            : try container.decode(LeaseMode.self, forKey: .leaseMode)
+        runID = try container.decode(String.self, forKey: .runID)
+        coordinatorPID = try container.decode(Int32.self, forKey: .coordinatorPID)
+        childPID = try container.decodeIfPresent(Int32.self, forKey: .childPID)
+        mode = try container.decode(ExecutionMode.self, forKey: .mode)
+        state = try container.decode(RunState.self, forKey: .state)
+        label = try container.decodeIfPresent(String.self, forKey: .label)
+        bead = try container.decodeIfPresent(String.self, forKey: .bead)
+        acquiredAt = try container.decode(String.self, forKey: .acquiredAt)
+    }
+
     public func replacing(
         state: RunState,
         childPID: Int32? = nil
@@ -164,6 +261,7 @@ public struct LockMetadata: Codable, Equatable, Sendable {
         LockMetadata(
             schemaVersion: schemaVersion,
             resourceName: resourceName,
+            leaseMode: leaseMode,
             runID: runID,
             coordinatorPID: coordinatorPID,
             childPID: childPID,
@@ -179,6 +277,7 @@ public struct LockMetadata: Codable, Equatable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(schemaVersion, forKey: .schemaVersion)
         try container.encode(resourceName, forKey: .resourceName)
+        try container.encode(leaseMode, forKey: .leaseMode)
         try container.encode(runID, forKey: .runID)
         try container.encode(coordinatorPID, forKey: .coordinatorPID)
         try container.encodeNullable(childPID, forKey: .childPID)

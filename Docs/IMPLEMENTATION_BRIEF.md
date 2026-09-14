@@ -7,9 +7,23 @@ tags: [agentlease, macos, implementation]
 
 # AgentLease implementation brief
 
-Status: Version 1 implemented and verified; Milestones 0 through 4 complete
+Status: Version 2 implemented and verified; original Milestones 0 through 4 complete
 
 Date: 2026-09-13
+
+## Version 2 amendment
+
+AgentLease 2.0.0 adds repeatable `--shared-resource` leases alongside the
+existing exclusive `--resource` contract. The complete mixed-mode set is
+validated and sorted once; shared entries use `LOCK_SH` and exclusive entries
+use `LOCK_EX`. Duplicate names across modes are invalid. It also exports the
+bounded `AGENTLEASE_LEASE_DESCRIPTORS` JSON manifest to both `run` and `exec`
+children. Run records and status output use schema version 2 to retain modes.
+
+The original milestone text below records the version-1 design. Statements that
+exclude shared locks, descriptor environment metadata, or schema evolution are
+superseded by
+[Shared resources and inherited descriptor manifest](shared-resources.md).
 
 ## Objective
 
@@ -162,9 +176,10 @@ validate executable format or interpreter availability. Handle all launch errors
 after ownership as well; an executable text file without a shebang may pass
 preflight and then fail with 126 at launch. Do not attempt to interpret it.
 
-Do not implement a daemon, distributed locks, network coordination, shared/read
-locks, lock stealing, TTL ownership, automatic Xcode policy, automatic Beads
-writes, or simulator allocation in the first release.
+The first release did not implement a daemon, distributed locks, network
+coordination, shared/read locks, lock stealing, TTL ownership, automatic Xcode
+policy, automatic Beads writes, or simulator allocation. Version 2 implements
+only the shared/read-lock part of that historical boundary.
 
 ## Resource identity
 
@@ -270,10 +285,11 @@ coordinate must use the same root.
 
 ## Kernel lock contract
 
-Use Darwin `flock` with `LOCK_EX | LOCK_NB`. A Swift owner object retains each
-open descriptor. Acquisition should poll asynchronously with a monotonic clock
-and a short bounded delay; do not block a Swift cooperative executor on a
-potentially indefinite system call.
+Use Darwin `flock` with `LOCK_EX | LOCK_NB` for exclusive resources and
+`LOCK_SH | LOCK_NB` for shared resources. A Swift owner object retains each open
+descriptor. Acquisition should poll asynchronously with a monotonic clock and a
+short bounded delay; do not block a Swift cooperative executor on a potentially
+indefinite system call.
 
 After a successful lock, move the descriptor out of the low application range
 with `fcntl(F_DUPFD_CLOEXEC, 64)` and close the original descriptor. Retain the
@@ -321,14 +337,18 @@ Status probes should follow the same close-without-unlock rule for consistency.
 
 Export the sorted resource names in `AGENTLEASE_HELD_RESOURCES` and the resolved
 state root in `AGENTLEASE_HOME` to the child. Because the resource grammar
-excludes commas, a comma-separated resource representation is sufficient for
-version 1. Do not export lock descriptor numbers.
+excludes commas, a comma-separated resource representation remains sufficient
+for the nested guard. Version 2 additionally exports exact descriptor numbers,
+modes, and persistent paths in the bounded `AGENTLEASE_LEASE_DESCRIPTORS`
+manifest; see the version-2 amendment.
 
 Build the child environment from the inherited environment, overwriting
 `AGENTLEASE_HOME`, `AGENTLEASE_RUN_ID`, and `AGENTLEASE_HELD_RESOURCES` for this
 invocation. Set `AGENTLEASE_BEAD_ID` only when `--bead` is supplied; otherwise
 remove any inherited value so stale correlation metadata cannot leak into a
-new run. Apply the same rules in both execution modes.
+new run. Remove any inherited `AGENTLEASE_LEASE_DESCRIPTORS` value while
+building this base environment, then set it from the fully acquired set. Apply
+the same rules in both execution modes.
 
 If `AGENTLEASE_HELD_RESOURCES` is already nonempty, a nested `run` or `exec`
 must fail with exit code 70 immediately after argument and raw-UTF-8 validation,
@@ -364,14 +384,15 @@ through the rest of the supervised lifecycle.
 This inheritance is the supervised mode's crash-safety lifeline. The parent and
 child refer to the same kernel lock. If the supervisor is killed, the command
 keeps ownership until it and all inheriting descendants close their copies. Do
-not clear `FD_CLOEXEC` on arbitrary descriptors and do not expose descriptor
-numbers in environment or metadata.
+not clear `FD_CLOEXEC` on arbitrary descriptors. Expose owned descriptor numbers
+only through the reserved, bounded manifest.
 
 After acquiring every lock:
 
 1. Atomically persist an `acquired` record with no child PID.
-2. Export `AGENTLEASE_RUN_ID`, `AGENTLEASE_HELD_RESOURCES`, and optional
-   `AGENTLEASE_BEAD_ID` to the child without deleting its inherited environment.
+2. Export `AGENTLEASE_RUN_ID`, `AGENTLEASE_HELD_RESOURCES`, the exact
+   `AGENTLEASE_LEASE_DESCRIPTORS` manifest, and optional `AGENTLEASE_BEAD_ID` to
+   the child without deleting its inherited environment.
 3. Leave `PlatformOptions.createSession` false, configure every teardown step
    with `toProcessGroup: true`, and install `POSIX_SPAWN_SETSID` through the
    Darwin configurator.
@@ -379,7 +400,7 @@ After acquiring every lock:
    and every Darwin inherit action with checked return codes, then spawn the
    exact argv without an implicit shell.
 5. Atomically replace the record with `running` and the child PID, then update
-   the best-effort lock metadata to the same state.
+   best-effort exclusive-lock metadata to the same state.
 6. Wait for termination and let Swift Subprocess reap the child.
 7. Atomically replace the record with its terminal outcome.
 8. Close the parent's lock descriptors only after terminal record persistence
@@ -439,7 +460,8 @@ descriptors is outside the cooperative contract and can defeat this lifeline.
 The command may spawn a descendant that leaves the created process group. If it
 inherits a lock descriptor, the lock remains held even after `run` returns. That
 is safer than permitting overlap. `status` will show the resource held with the
-last run metadata; AgentLease has no lock-stealing recovery path.
+last decodable metadata when available; AgentLease has no lock-stealing recovery
+path.
 
 ## `exec`: inherited-descriptor execution
 
@@ -447,10 +469,11 @@ last run metadata; AgentLease has no lock-stealing recovery path.
 
 1. Validate the command and resolve its executable before acquiring locks.
 2. Acquire all resources and write the `acquired` record.
-3. Export the AgentLease environment fields.
+3. Export the AgentLease environment fields, including the exact descriptor
+   manifest.
 4. Clear `FD_CLOEXEC` only on the owned lock descriptors.
-5. Write a `handoffPrepared` record and matching best-effort lock metadata
-   immediately before replacement.
+5. Write a `handoffPrepared` record and matching best-effort exclusive-lock
+   metadata immediately before replacement.
 6. Call Darwin `execve` with the resolved executable, exact argv, and updated
    inherited environment, while preserving the caller's
    stdin/stdout/stderr and terminal process group.
@@ -501,15 +524,16 @@ required; otherwise call the contract atomic replacement with checked syncing,
 rather than unconditional durable storage. Version the schema from the first
 commit.
 
-Suggested version-1 shape:
+Current version-2 shape (the legacy `resources` array is retained):
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "runID": "UUID",
   "mode": "run",
   "state": "exited",
   "resources": ["notika:derived-data:debug"],
+  "resourceLeases": [{"resource":"notika:derived-data:debug","mode":"exclusive"}],
   "label": "Select region tests",
   "bead": "notika-62i.1.12.1.2.1",
   "coordinatorPID": 1234,
@@ -597,14 +621,14 @@ commonly contains credentials. The commitment establishes equality only; it is
 not authentication and does not conceal a guessable secret supplied as an
 argument.
 
-Lock-file metadata should contain only schema version, resource name, run ID,
-coordinator PID, optional child PID, mode, state, label, Bead ID, and acquisition
-time. It is diagnostic data and need not duplicate the full run record. Limit
-its encoded size and every status read to 4,096 bytes. Treat a partial,
-oversized, or invalid value as unavailable; replacing a lock file to make
-metadata atomic is forbidden. While holding the lock, rewrite in place with a
-checked truncate and complete positional write; a crash may still leave partial
-diagnostic bytes without affecting kernel ownership.
+Lock-file metadata schema 2 contains schema version, resource name, lease mode,
+run ID, coordinator PID, optional child PID, execution mode, state, label, Bead
+ID, and acquisition time. It is diagnostic data and need not duplicate the full
+run record. Limit its encoded size and every status read to 4,096 bytes. Treat a
+partial, oversized, or invalid value as unavailable; replacing a lock file to
+make metadata atomic is forbidden. Only exclusive holders rewrite it in place
+with a checked truncate and complete positional write. Shared holders never
+mutate it because their concurrent truncate/write sequences would race.
 
 “Best-effort” means a metadata encoding, truncation, or write failure never
 prevents acquisition, launch, teardown, or descriptor release and never changes
@@ -621,9 +645,9 @@ rules above.
 2. Attempt `LOCK_EX | LOCK_NB`.
 3. If acquisition succeeds, read bounded metadata while the probe lock is held,
    close the descriptor, and report `free` plus any decodable last-owner data.
-4. If `EWOULDBLOCK`, read only a bounded payload and report `held` plus
-   best-effort metadata; concurrent owner writes may make it temporarily
-   undecodable.
+4. If the exclusive probe is busy, use a shared probe and exclusive upgrade to
+   distinguish `held`/`exclusive`, `held`/`shared`, and a holder that released
+   between probes, as specified in [Status inspection](status.md).
 5. Treat other probe errors as `unknown` and report the error; never call the
    resource free merely because metadata is absent or corrupt.
 
@@ -654,7 +678,7 @@ enumeration errors also appear in the top-level list.
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "stateRoot": "/Users/example/.agentlease",
   "entries": [
     {
@@ -662,10 +686,12 @@ enumeration errors also appear in the top-level list.
       "digest": "0123...cdef",
       "resource": "example:build",
       "availability": "held",
+      "heldMode": "exclusive",
       "metadataStatus": "valid",
       "lastOwner": {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "resourceName": "example:build",
+        "leaseMode": "exclusive",
         "runID": "UUID",
         "coordinatorPID": 1234,
         "childPID": 1235,
@@ -682,11 +708,12 @@ enumeration errors also appear in the top-level list.
 }
 ```
 
-Use `digest: null`, `resource: null`, and `availability: "unknown"` for an
-unexpected directory entry. For a valid lock filename with absent or invalid
-metadata, retain its digest, set `resource` and `lastOwner` to null, and report
-the kernel-derived availability. Human output must preserve the same distinctions
-without promising a stable whitespace layout.
+Use `digest: null`, `resource: null`, `heldMode: null`, and
+`availability: "unknown"` for an unexpected directory entry. For a valid lock
+filename with absent or invalid metadata, retain its digest, set `resource` and
+`lastOwner` to null, and report the kernel-derived availability and held mode.
+Human output must preserve the same distinctions without promising a stable
+whitespace layout.
 
 If a resource remains held after its coordinator PID has disappeared, assume an
 inherited child or descendant still owns the file description. Operational

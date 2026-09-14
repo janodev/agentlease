@@ -20,6 +20,7 @@ public struct StatusEntry: Codable, Equatable, Sendable {
     public let digest: String?
     public let resource: String?
     public let availability: LeaseAvailability
+    public let heldMode: LeaseMode?
     public let metadataStatus: MetadataStatus
     public let lastOwner: LockMetadata?
     public let error: AgentLeaseFailure?
@@ -29,6 +30,7 @@ public struct StatusEntry: Codable, Equatable, Sendable {
         digest: String?,
         resource: String?,
         availability: LeaseAvailability,
+        heldMode: LeaseMode?,
         metadataStatus: MetadataStatus,
         lastOwner: LockMetadata?,
         error: AgentLeaseFailure?
@@ -37,6 +39,7 @@ public struct StatusEntry: Codable, Equatable, Sendable {
         self.digest = digest
         self.resource = resource
         self.availability = availability
+        self.heldMode = heldMode
         self.metadataStatus = metadataStatus
         self.lastOwner = lastOwner
         self.error = error
@@ -48,6 +51,7 @@ public struct StatusEntry: Codable, Equatable, Sendable {
         try encodeNullable(digest, in: &container, forKey: .digest)
         try encodeNullable(resource, in: &container, forKey: .resource)
         try container.encode(availability, forKey: .availability)
+        try encodeNullable(heldMode, in: &container, forKey: .heldMode)
         try container.encode(metadataStatus, forKey: .metadataStatus)
         try encodeNullable(lastOwner, in: &container, forKey: .lastOwner)
         try encodeNullable(error, in: &container, forKey: .error)
@@ -61,7 +65,7 @@ public struct StatusReport: Codable, Equatable, Sendable {
     public let errors: [AgentLeaseFailure]
 
     public init(
-        schemaVersion: Int = 1,
+        schemaVersion: Int = 2,
         stateRoot: String,
         entries: [StatusEntry],
         errors: [AgentLeaseFailure]
@@ -85,6 +89,13 @@ public struct StatusProbeResult: Sendable {
 
 public enum StatusProbe {
     public static func inspect(paths: AgentLeasePaths) -> StatusProbeResult {
+        inspect(paths: paths, afterExclusiveContention: {})
+    }
+
+    static func inspect(
+        paths: AgentLeasePaths,
+        afterExclusiveContention: () -> Void
+    ) -> StatusProbeResult {
         let enumeration = enumerate(paths: paths)
         var entries: [StatusEntry] = []
         var requiresFailureExit = !enumeration.errors.isEmpty
@@ -99,6 +110,7 @@ public enum StatusProbe {
                         digest: nil,
                         resource: nil,
                         availability: .unknown,
+                        heldMode: nil,
                         metadataStatus: .invalid,
                         lastOwner: nil,
                         error: AgentLeaseFailure(
@@ -111,7 +123,12 @@ public enum StatusProbe {
                 continue
             }
 
-            let result = inspect(fileName: fileName, digest: digest, paths: paths)
+            let result = inspect(
+                fileName: fileName,
+                digest: digest,
+                paths: paths,
+                afterExclusiveContention: afterExclusiveContention
+            )
             entries.append(result.entry)
             requiresFailureExit = requiresFailureExit || result.requiresFailureExit
         }
@@ -194,7 +211,8 @@ public enum StatusProbe {
     private static func inspect(
         fileName: String,
         digest: String,
-        paths: AgentLeasePaths
+        paths: AgentLeasePaths,
+        afterExclusiveContention: () -> Void
     ) -> EntryInspection {
         let descriptor = fileName.withCString { pointer in
             Darwin.openat(
@@ -220,10 +238,12 @@ public enum StatusProbe {
         }
 
         let availability: LeaseAvailability
+        let heldMode: LeaseMode?
         var probeFailure: AgentLeaseFailure?
         while true {
             if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
                 availability = .free
+                heldMode = nil
                 break
             }
             let errorNumber = errno
@@ -231,9 +251,56 @@ public enum StatusProbe {
                 continue
             }
             if errorNumber == EWOULDBLOCK || errorNumber == EAGAIN {
-                availability = .held
+                afterExclusiveContention()
+                while true {
+                    if flock(descriptor, LOCK_SH | LOCK_NB) == 0 {
+                        // The contending owner may have released before this probe.
+                        // An upgrade distinguishes that race from another shared holder.
+                        while true {
+                            if flock(descriptor, LOCK_EX | LOCK_NB) == 0 {
+                                availability = .free
+                                heldMode = nil
+                                break
+                            }
+                            let upgradeError = errno
+                            if upgradeError == EINTR {
+                                continue
+                            }
+                            if upgradeError == EWOULDBLOCK || upgradeError == EAGAIN {
+                                availability = .held
+                                heldMode = .shared
+                            } else {
+                                availability = .unknown
+                                heldMode = nil
+                                probeFailure = systemFailure(
+                                    operation: "flockStatusUpgradeProbe",
+                                    errorNumber: upgradeError
+                                )
+                            }
+                            break
+                        }
+                        break
+                    }
+                    let sharedError = errno
+                    if sharedError == EINTR {
+                        continue
+                    }
+                    if sharedError == EWOULDBLOCK || sharedError == EAGAIN {
+                        availability = .held
+                        heldMode = .exclusive
+                    } else {
+                        availability = .unknown
+                        heldMode = nil
+                        probeFailure = systemFailure(
+                            operation: "flockStatusSharedProbe",
+                            errorNumber: sharedError
+                        )
+                    }
+                    break
+                }
             } else {
                 availability = .unknown
+                heldMode = nil
                 probeFailure = systemFailure(
                     operation: "flockStatusProbe",
                     errorNumber: errorNumber
@@ -266,6 +333,7 @@ public enum StatusProbe {
                 digest: digest,
                 resource: metadataFields.resource,
                 availability: availability,
+                heldMode: heldMode,
                 metadataStatus: metadataFields.status,
                 lastOwner: metadataFields.owner,
                 error: probeFailure ?? metadataFields.error
@@ -335,7 +403,7 @@ public enum StatusProbe {
             let resource = try ResourceName(metadata.resourceName)
             try TextFieldValidator.validate(metadata.label, field: "label")
             try TextFieldValidator.validate(metadata.bead, field: "bead")
-            guard metadata.schemaVersion == 1,
+            guard (metadata.schemaVersion == 1 || metadata.schemaVersion == 2),
                   resource.lockDigest == digest,
                   UUID(uuidString: metadata.runID) != nil,
                   metadata.coordinatorPID > 0,
@@ -366,6 +434,7 @@ public enum StatusProbe {
                 digest: digest,
                 resource: nil,
                 availability: .unknown,
+                heldMode: nil,
                 metadataStatus: .unreadable,
                 lastOwner: nil,
                 error: failure

@@ -5,6 +5,40 @@ import Testing
 
 @Suite("agentlease exec", .serialized)
 struct ExecCommandTests {
+    @Test("Exec exports a verified sorted lease descriptor manifest")
+    func leaseDescriptorManifest() throws {
+        let fixture = try CLIFixture()
+        defer { fixture.remove() }
+        let helper = try builtExecutable(named: "agentlease-spike-helper")
+        let output = fixture.parent.appendingPathComponent("exec-manifest.json")
+        let process = try fixture.agentLease(
+            [
+                "exec",
+                "--shared-resource", "b:shared",
+                "--resource", "a:exclusive",
+                "--", helper, "verify-lease-manifest", output.path,
+            ],
+            environment: [InheritedLeaseManifest.environmentKey: "stale"]
+        )
+        process.process.waitUntilExit()
+
+        #expect(process.process.terminationStatus == 0, "\(process.errorText())")
+        let value = try String(contentsOf: output, encoding: .utf8)
+        let manifest = try InheritedLeaseManifest.decodeEnvironmentValue(value)
+        #expect(manifest.leases.map(\.resource) == ["a:exclusive", "b:shared"])
+        #expect(manifest.leases.map(\.mode) == [.exclusive, .shared])
+        let canonicalRoot = try AgentLeasePaths.open(
+            selectedRoot: fixture.stateRoot.path
+        ).rootPath
+        #expect(manifest.leases.map(\.path) == [
+            canonicalRoot + "/locks/" + (try ResourceName("a:exclusive")).lockFileName,
+            canonicalRoot + "/locks/" + (try ResourceName("b:shared")).lockFileName,
+        ])
+        let record = try #require(fixture.readRecords().first)
+        #expect(record.schemaVersion == 2)
+        #expect(record.resourceLeases.map(\.mode) == [.exclusive, .shared])
+    }
+
     @Test("Replacement preserves streams, environment, child status, and handoff record")
     func streamsEnvironmentAndRecord() throws {
         let fixture = try CLIFixture()

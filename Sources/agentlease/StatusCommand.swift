@@ -44,9 +44,13 @@ struct StatusCommand: ParsableCommand {
                 ?? AgentLeaseFailure.bounded(AgentLeaseFailure.sanitized(entry.fileName))
             var line = "\(entry.availability.rawValue) \(identity)"
                 + " metadata=\(entry.metadataStatus.rawValue)"
+            if let heldMode = entry.heldMode {
+                line += " held-mode=\(heldMode.rawValue)"
+            }
             if let owner = entry.lastOwner {
                 let ownerKey = entry.availability == .free ? "historical-run" : "run"
-                line += " \(ownerKey)=\(owner.runID)"
+                line += " last-owner-mode=\(owner.leaseMode.rawValue)"
+                    + " \(ownerKey)=\(owner.runID)"
                 if let label = owner.label {
                     line += " label=\(label)"
                 }

@@ -11,12 +11,13 @@ struct MetadataContext: Sendable {
     let runID: String
 
     func value(
-        resource: ResourceName,
+        lease: ResourceLease,
         state: RunState,
         childPID: Int32?
     ) -> LockMetadata {
         LockMetadata(
-            resourceName: resource.value,
+            resourceName: lease.resource.value,
+            leaseMode: lease.mode,
             runID: runID,
             coordinatorPID: coordinatorPID,
             childPID: childPID,
@@ -103,17 +104,17 @@ final class RunRecordPublication: Sendable {
 }
 
 func reportContention(
-    resource: ResourceName,
+    lease: ResourceLease,
     metadataRead: BoundedMetadataRead
 ) {
     var owner = ""
     if case .data(let data) = metadataRead,
        let metadata = try? JSONDecoder().decode(LockMetadata.self, from: data),
-       metadata.resourceName == resource.value {
+       metadata.resourceName == lease.resource.value {
         let label = metadata.label.map { " label=\($0)" } ?? ""
         owner = " (last owner run=\(metadata.runID)\(label))"
     }
-    stderr("waiting for resource \(resource.value)\(owner)")
+    stderr("waiting for \(lease.mode.rawValue) resource \(lease.resource.value)\(owner)")
 }
 
 func reportMetadataIssues(_ lease: LeaseSet) {

@@ -9,6 +9,11 @@ public enum ResourceValidationError: Error, Equatable, Sendable {
     case tooMany(Int)
 }
 
+public enum LeaseMode: String, Codable, Sendable {
+    case exclusive
+    case shared
+}
+
 public struct ResourceName: Codable, Comparable, Hashable, Sendable {
     public let value: String
 
@@ -52,13 +57,45 @@ public struct ResourceName: Codable, Comparable, Hashable, Sendable {
     }
 }
 
+public struct ResourceLease: Codable, Equatable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case mode
+        case resource
+    }
+
+    public let resource: ResourceName
+    public let mode: LeaseMode
+
+    public init(resource: ResourceName, mode: LeaseMode) {
+        self.resource = resource
+        self.mode = mode
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        resource = try ResourceName(container.decode(String.self, forKey: .resource))
+        mode = try container.decode(LeaseMode.self, forKey: .mode)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(resource.value, forKey: .resource)
+        try container.encode(mode, forKey: .mode)
+    }
+}
+
 public struct ResourceSet: Equatable, Sendable {
     public static let maximumCount = 64
     public static let maximumEnvironmentBytes = 4_096
 
-    public let resources: [ResourceName]
+    public let leases: [ResourceLease]
 
     public init(_ values: [String]) throws {
+        try self.init(exclusive: values, shared: [])
+    }
+
+    public init(exclusive: [String], shared: [String]) throws {
+        let values = exclusive + shared
         guard !values.isEmpty else {
             throw ResourceValidationError.emptySet
         }
@@ -66,7 +103,9 @@ public struct ResourceSet: Equatable, Sendable {
             throw ResourceValidationError.tooMany(values.count)
         }
 
-        let validated = try values.map(ResourceName.init)
+        let exclusiveResources = try exclusive.map(ResourceName.init)
+        let sharedResources = try shared.map(ResourceName.init)
+        let validated = exclusiveResources + sharedResources
         var seen = Set<ResourceName>()
         for resource in validated where !seen.insert(resource).inserted {
             throw ResourceValidationError.duplicate(resource.value)
@@ -79,7 +118,17 @@ public struct ResourceSet: Equatable, Sendable {
                 representation.utf8.count
             )
         }
-        resources = sorted
+        let exclusiveSet = Set(exclusiveResources)
+        leases = sorted.map { resource in
+            ResourceLease(
+                resource: resource,
+                mode: exclusiveSet.contains(resource) ? .exclusive : .shared
+            )
+        }
+    }
+
+    public var resources: [ResourceName] {
+        leases.map(\.resource)
     }
 
     public var environmentValue: String {

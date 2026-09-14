@@ -223,16 +223,16 @@ struct LeaseSetTests {
         ])
         try await waitForExit(heldProbe)
         #expect(heldProbe.process.terminationStatus == 75, "\(heldProbe.readOutput())")
-        lease.updateMetadata { resource in
-            fixture.metadata(resource: resource).replacing(state: .running)
+        lease.updateMetadata { resourceLease in
+            fixture.metadata(lease: resourceLease).replacing(state: .running)
         }
         #expect(lease.takeMetadataWriteIssues().count == 1)
 
         try makeMarker(at: release)
         let result = try await task.value
         #expect(result.termination == .exited(23))
-        lease.updateMetadata { resource in
-            fixture.metadata(resource: resource).replacing(state: .exited)
+        lease.updateMetadata { resourceLease in
+            fixture.metadata(lease: resourceLease).replacing(state: .exited)
         }
         #expect(lease.takeMetadataWriteIssues().count == 1)
         lease.release()
@@ -264,6 +264,29 @@ struct LeaseSetTests {
         #expect(metadata.runID == "lease-test")
         #expect(lease.metadataWriteIssues.isEmpty)
         lease.release()
+    }
+
+    @Test("Shared leases never mutate the common lock metadata file")
+    func sharedMetadataIsReadOnly() async throws {
+        let fixture = try LeaseFixture()
+        defer { fixture.remove() }
+        let paths = try AgentLeasePaths.open(selectedRoot: fixture.root.path)
+        let resources = try ResourceSet(exclusive: [], shared: ["shared-metadata"])
+        let lease = try await LeaseSet.acquire(
+            resources,
+            paths: paths,
+            waitSeconds: 0,
+            initialMetadata: fixture.metadata
+        )
+        defer { lease.release() }
+        let file = fixture.lockPath(resource: try ResourceName("shared-metadata"))
+        #expect(try Data(contentsOf: file).isEmpty)
+
+        lease.updateMetadata { resourceLease in
+            fixture.metadata(lease: resourceLease).replacing(state: .running)
+        }
+        #expect(try Data(contentsOf: file).isEmpty)
+        #expect(lease.metadataWriteIssues.isEmpty)
     }
 
     @Test("Owned lock descriptors survive only the selected spawn inheritance path")
@@ -328,9 +351,10 @@ private struct LeaseFixture: Sendable {
         root.appendingPathComponent("locks").appendingPathComponent(resource.lockFileName)
     }
 
-    func metadata(resource: ResourceName) -> LockMetadata {
+    func metadata(lease: ResourceLease) -> LockMetadata {
         LockMetadata(
-            resourceName: resource.value,
+            resourceName: lease.resource.value,
+            leaseMode: lease.mode,
             runID: "lease-test",
             coordinatorPID: getpid(),
             childPID: nil,

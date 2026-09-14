@@ -8,6 +8,12 @@ struct ExecutionOptions: ParsableArguments, Sendable {
     )
     var resource: [String] = []
 
+    @Option(
+        name: .long,
+        help: "Named resource to own concurrently with other shared holders; repeatable."
+    )
+    var sharedResource: [String] = []
+
     @Option(name: .long, help: "Human-readable description stored in diagnostics.")
     var label: String?
 
@@ -32,7 +38,7 @@ struct ExecutionOptions: ParsableArguments, Sendable {
         }
         command.removeFirst()
         do {
-            _ = try ResourceSet(resource)
+            _ = try ResourceSet(exclusive: resource, shared: sharedResource)
             try TextFieldValidator.validate(label, field: "label")
             try TextFieldValidator.validate(bead, field: "bead")
         } catch {

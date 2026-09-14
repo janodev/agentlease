@@ -46,6 +46,33 @@ struct FileLockTests {
         lock.release()
     }
 
+    @Test("Shared holders coexist and exclude exclusive holders")
+    func sharedAndExclusiveCompatibility() throws {
+        let fixture = try LockFixture()
+        defer { fixture.remove() }
+        let resource = try ResourceName("example:shared")
+        let firstShared = try FileLock(resource: resource, mode: .shared, paths: fixture.paths)
+        let secondShared = try FileLock(resource: resource, mode: .shared, paths: fixture.paths)
+        let exclusive = try FileLock(resource: resource, paths: fixture.paths)
+
+        #expect(try firstShared.tryAcquire())
+        #expect(throws: FileLockError.metadataRequiresExclusive(resource.value)) {
+            try firstShared.writeMetadata(Data("forbidden".utf8))
+        }
+        #expect(try secondShared.tryAcquire())
+        #expect(try !exclusive.tryAcquire())
+        firstShared.release()
+        #expect(try !exclusive.tryAcquire())
+        secondShared.release()
+        #expect(try exclusive.tryAcquire())
+
+        let blockedShared = try FileLock(resource: resource, mode: .shared, paths: fixture.paths)
+        #expect(try !blockedShared.tryAcquire())
+        exclusive.release()
+        #expect(try blockedShared.tryAcquire())
+        blockedShared.release()
+    }
+
     @Test("Symlinks, directories, hard links, and unsafe modes fail closed")
     func rejectsUnsafeLockFiles() throws {
         try expectUnsafeLockPath(resourceValue: "unsafe:symlink") { fixture, resource in

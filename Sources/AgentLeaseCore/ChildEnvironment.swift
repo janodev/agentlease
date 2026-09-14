@@ -16,11 +16,23 @@ public enum ChildEnvironment {
         environment[AgentLeasePaths.homeEnvironmentKey] = stateRoot
         environment[runIDKey] = runID
         environment[heldResourcesKey] = resources.environmentValue
+        environment.removeValue(forKey: InheritedLeaseManifest.environmentKey)
         if let bead {
             environment[beadIDKey] = bead
         } else {
             environment.removeValue(forKey: beadIDKey)
         }
+        return environment
+    }
+
+    public static func addingLeaseDescriptorManifest(
+        _ leases: [InheritedLeaseDescriptor],
+        to environment: [String: String]
+    ) throws -> [String: String] {
+        var environment = environment
+        environment[InheritedLeaseManifest.environmentKey] = try InheritedLeaseManifest(
+            leases: leases
+        ).environmentValue()
         return environment
     }
 

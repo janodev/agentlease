@@ -100,6 +100,17 @@ struct AtomicJSONStoreTests {
             JSONSerialization.jsonObject(with: Data(contentsOf: fixture.record))
                 as? [String: Any]
         )
+        #expect(object["schemaVersion"] as? Int == 2)
+        let resourceLeases = try #require(object["resourceLeases"] as? [[String: String]])
+        #expect(resourceLeases == [["mode": "exclusive", "resource": "example:build"]])
+        var legacyObject = object
+        legacyObject["schemaVersion"] = 1
+        legacyObject.removeValue(forKey: "resourceLeases")
+        let legacyRecord = try JSONDecoder().decode(
+            RunRecord.self,
+            from: JSONSerialization.data(withJSONObject: legacyObject)
+        )
+        #expect(legacyRecord.resourceLeases.map(\.mode) == [.exclusive])
         for key in [
             "arguments", "bead", "childPID", "finishedAt", "label", "receivedSignal",
             "termination",

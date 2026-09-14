@@ -1,6 +1,6 @@
 # AgentLease
 
-AgentLease coordinates local agent workflows with exclusive named resources.
+AgentLease 2 coordinates local agent workflows with shared or exclusive named resources.
 Darwin `flock` ownership is authoritative; JSON records and lock metadata are
 diagnostic only. It is a standalone tool and does not depend on Beads, SimLease,
 Notika, or an Xcode project.
@@ -24,20 +24,25 @@ install -m 755 .build/release/agentlease "$HOME/.local/bin/agentlease"
 
 The destination directory must already exist. A packaged release can install
 the same built `agentlease` executable; no runtime service or daemon is needed.
+This contract reports `agentlease --version` as `2.0.0`; the major version marks
+the run-record and status JSON schema upgrade from version 1 to version 2.
 
 ## Use
 
 A resource name matches `[A-Za-z0-9][A-Za-z0-9._:/-]{0,255}`. Supply between one
-and 64 distinct resources. AgentLease sorts the complete set before acquisition,
-so callers may list resources in any order without introducing lock-order
-deadlocks.
+and 64 distinct resources across `--resource` and `--shared-resource`.
+`--resource` is exclusive and preserves the version-1 behavior;
+`--shared-resource` can overlap other shared holders of the same name but waits
+for an exclusive holder. A name may appear only once across both modes.
+AgentLease sorts the complete mixed-mode set before acquisition, so callers may
+list resources in any order without introducing lock-order deadlocks.
 
 Supervise a noninteractive command:
 
 ```sh
 agentlease run \
   --resource notika:xcode-project-generation \
-  --resource notika:derived-data:debug \
+  --shared-resource notika:derived-data:debug \
   --label "Debug build" \
   -- make build-macos
 ```
@@ -72,13 +77,17 @@ free.
 Common options for `run` and `exec` are:
 
 ```text
---resource <name>       Repeatable and required.
+--resource <name>        Repeatable exclusive resource.
+--shared-resource <name> Repeatable shared resource.
 --label <text>          Optional 1...256-byte diagnostic label.
 --bead <id>             Optional 1...256-byte correlation value.
 --wait-seconds <value>  Finite nonnegative acquisition deadline; wait forever if absent.
 --record-arguments      Persist the full argv; otherwise store only its commitment.
 -- <executable> [args]  Required direct argument boundary; no implicit shell.
 ```
+
+At least one resource option is required. The 64-resource and 4,096-byte
+comma-separated name limits apply to the combined set.
 
 For a shell pipeline, request the shell explicitly:
 
@@ -108,7 +117,22 @@ Owned lock descriptors are duplicated at descriptor 64 or above. Supervised
 mode keeps them close-on-exec in the coordinator and selects them explicitly for
 child inheritance. Direct mode clears close-on-exec only immediately before
 replacement. Descendants inherit these descriptors unless they deliberately
-close them or configure their own spawn actions otherwise.
+close them or configure their own spawn actions otherwise. Each immediate child
+also receives `AGENTLEASE_LEASE_DESCRIPTORS`, a compact deterministic JSON
+manifest:
+
+```json
+{"leases":[{"descriptor":64,"mode":"shared","path":"/absolute/state/locks/<sha256>.lock","resource":"example:cache"}],"schemaVersion":1}
+```
+
+The `leases` array uses the same resource-name order as acquisition. Each entry
+contains the exact inherited descriptor number, `shared` or `exclusive` mode,
+validated resource name, and persistent canonical lock path. The encoded UTF-8
+value is limited to 131,072 bytes; each absolute path is limited to 4,096 bytes
+and may not contain C0 or C1 control scalars. AgentLease removes any inherited
+value before acquisition and overwrites it with the current manifest after the
+complete set is owned. `AGENTLEASE_HELD_RESOURCES` remains the nested-execution
+guard and contains the same sorted names without mode information.
 
 This inheritance is intentional crash safety. If a `run` coordinator receives
 `SIGKILL`, a surviving child still prevents another owner from entering, while
@@ -120,6 +144,19 @@ split ownership between two inodes.
 
 Child commands are cooperative. A command that deliberately closes or unlocks
 unknown inherited descriptors can defeat retention.
+
+Trusted integrations that must establish one inherited exclusive lease before
+entering a protected child may invoke the hidden
+`verify-inherited-exclusive --resource <name>` command with the inherited
+descriptor manifest. It validates the exact single-resource envelope and safe
+inode, then establishes the exclusive flock on the same open-file description.
+This does not authenticate the original coordinator.
+
+Shared holders do not rewrite the common lock file's last-owner metadata,
+because concurrent truncate-and-write operations would race. Run records and
+the inherited manifest retain every requested mode. `status` derives both
+availability and a held mode from kernel lock probes; metadata remains only
+historical diagnostics.
 
 ## Exit behavior
 

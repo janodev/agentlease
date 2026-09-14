@@ -15,11 +15,13 @@ publication with supervised mode. It preserves the caller's stdin, stdout,
 stderr, process group, exact argument array, and inherited environment except
 for AgentLease's reserved correlation fields.
 
-After publishing `acquired`, direct mode deliberately clears `FD_CLOEXEC` only
-on the retained lock descriptors. It then publishes `handoffPrepared`, writes
-matching best-effort lock metadata, and calls Darwin `execve` with the already
-resolved path. It never calls `execvp` and never interprets an executable-format
-failure through a shell.
+After publishing `acquired`, direct mode exports the exact sorted shared and
+exclusive descriptor manifest and deliberately clears `FD_CLOEXEC` only on the
+retained lock descriptors. It then publishes `handoffPrepared`, writes matching
+best-effort metadata for exclusive locks, and calls Darwin `execve` with the
+already resolved path. Shared locks do not mutate common metadata. Direct mode
+never calls `execvp` and never interprets an executable-format failure through
+a shell.
 
 Successful replacement retains the AgentLease PID and leaves the run record at
 `handoffPrepared`; there is no surviving coordinator that could truthfully
@@ -44,7 +46,7 @@ releases its locks unless another inheriting descendant remains alive.
 
 If descriptor preparation or `handoffPrepared` publication fails, no command is
 started. If `execve` returns, AgentLease publishes `failed`, attempts matching
-best-effort lock metadata, reports the error, and closes all retained
+best-effort metadata for exclusive locks, reports the error, and closes all retained
 descriptors without an explicit unlock. Missing interpreters map to 127;
 permission and executable-format failures map to 126; AgentLease setup and
 publication failures map to 70. Failure-record publication is attempted once,

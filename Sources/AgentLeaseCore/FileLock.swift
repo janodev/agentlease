@@ -4,6 +4,7 @@ import Foundation
 public enum FileLockError: Error, Equatable, Sendable {
     case alreadyAcquired(String)
     case invalidMetadataSize(Int)
+    case metadataRequiresExclusive(String)
     case released(String)
     case systemCall(operation: String, resource: String, errorNumber: Int32)
     case unsafeFile(resource: String, reason: String)
@@ -22,6 +23,13 @@ public enum FileLockError: Error, Equatable, Sendable {
                 kind: .lockIO,
                 operation: "writeMetadata",
                 message: "metadata size \(size) exceeds 4096 bytes"
+            )
+        case .metadataRequiresExclusive(let resource):
+            AgentLeaseFailure(
+                kind: .lockIO,
+                operation: "writeMetadata",
+                resource: resource,
+                message: "shared leases cannot mutate common lock metadata"
             )
         case .released(let resource):
             AgentLeaseFailure(
@@ -60,22 +68,36 @@ public final class FileLock {
     public static let maximumMetadataBytes = 4_096
     public static let minimumOwnedDescriptor: Int32 = 64
 
+    public let mode: LeaseMode
+    public let persistentPath: String
     public let resource: ResourceName
 
     private var acquired = false
     private var descriptor: Int32
     private let metadataWriteFailure: FileLockError?
 
-    public convenience init(resource: ResourceName, paths: AgentLeasePaths) throws {
-        try self.init(resource: resource, paths: paths, metadataWriteFailure: nil)
+    public convenience init(
+        resource: ResourceName,
+        mode: LeaseMode = .exclusive,
+        paths: AgentLeasePaths
+    ) throws {
+        try self.init(
+            resource: resource,
+            mode: mode,
+            paths: paths,
+            metadataWriteFailure: nil
+        )
     }
 
     init(
         resource: ResourceName,
+        mode: LeaseMode,
         paths: AgentLeasePaths,
         metadataWriteFailure: FileLockError?
     ) throws {
         self.resource = resource
+        self.mode = mode
+        persistentPath = paths.rootPath + "/locks/" + resource.lockFileName
         self.metadataWriteFailure = metadataWriteFailure
         descriptor = try Self.openPersistentLockFile(resource: resource, paths: paths)
     }
@@ -101,7 +123,8 @@ public final class FileLock {
             throw FileLockError.alreadyAcquired(resource.value)
         }
 
-        while flock(descriptor, LOCK_EX | LOCK_NB) != 0 {
+        let operation = mode == .exclusive ? LOCK_EX : LOCK_SH
+        while flock(descriptor, operation | LOCK_NB) != 0 {
             let lockError = errno
             if lockError == EINTR {
                 continue
@@ -214,6 +237,9 @@ public final class FileLock {
     }
 
     public func writeMetadata(_ data: Data) throws {
+        guard mode == .exclusive else {
+            throw FileLockError.metadataRequiresExclusive(resource.value)
+        }
         if let metadataWriteFailure {
             throw metadataWriteFailure
         }

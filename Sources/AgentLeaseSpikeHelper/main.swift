@@ -76,6 +76,11 @@ enum AgentLeaseSpikeHelper {
             try await holdLease(arguments: Array(arguments.dropFirst()), waitsForStart: true)
         case "hold-inherited-locks":
             try holdInheritedLocks(arguments: Array(arguments.dropFirst()))
+        case "verify-lease-manifest":
+            guard arguments.count == 2 else {
+                throw HelperError.invalidArguments
+            }
+            try verifyLeaseManifest(outputPath: arguments[1])
         case "probe-lease":
             try await probeLease(arguments: Array(arguments.dropFirst()))
         case "prepare-state":
@@ -220,9 +225,10 @@ enum AgentLeaseSpikeHelper {
             resources,
             paths: paths,
             waitSeconds: 5,
-            initialMetadata: { resource in
+            initialMetadata: { lease in
                 LockMetadata(
-                    resourceName: resource.value,
+                    resourceName: lease.resource.value,
+                    leaseMode: lease.mode,
                     runID: "spike-helper",
                     coordinatorPID: getpid(),
                     childPID: nil,
@@ -285,6 +291,34 @@ enum AgentLeaseSpikeHelper {
         waitForever()
     }
 
+    private static func verifyLeaseManifest(outputPath: String) throws {
+        guard let value = ProcessInfo.processInfo.environment[
+            InheritedLeaseManifest.environmentKey
+        ] else {
+            throw HelperError.missingLeaseManifest
+        }
+        let manifest = try InheritedLeaseManifest.decodeEnvironmentValue(value)
+        for lease in manifest.leases {
+            let flags = fcntl(lease.descriptor, F_GETFD)
+            guard flags >= 0, flags & FD_CLOEXEC == 0 else {
+                throw HelperError.invalidInheritedDescriptor(lease.descriptor)
+            }
+            var path = [CChar](repeating: 0, count: Int(PATH_MAX))
+            guard fcntl(lease.descriptor, F_GETPATH, &path) == 0 else {
+                throw HelperError.systemCall("fcntl(F_GETPATH)", errno)
+            }
+            let terminator = path.firstIndex(of: 0) ?? path.endIndex
+            let actualPath = String(
+                decoding: path[..<terminator].map { UInt8(bitPattern: $0) },
+                as: UTF8.self
+            )
+            guard actualPath == lease.path else {
+                throw HelperError.incorrectInheritedPath(actual: actualPath, expected: lease.path)
+            }
+        }
+        try value.write(toFile: outputPath, atomically: true, encoding: .utf8)
+    }
+
     private static func prepareState(arguments: [String], restrictiveUmask: Bool) throws {
         guard arguments.count == 1 else {
             throw HelperError.invalidArguments
@@ -306,9 +340,10 @@ enum AgentLeaseSpikeHelper {
                 resources,
                 paths: paths,
                 waitSeconds: 0,
-                initialMetadata: { resource in
+                initialMetadata: { lease in
                     LockMetadata(
-                        resourceName: resource.value,
+                        resourceName: lease.resource.value,
+                        leaseMode: lease.mode,
                         runID: "probe-helper",
                         coordinatorPID: getpid(),
                         childPID: nil,
@@ -346,8 +381,11 @@ enum AgentLeaseSpikeHelper {
 }
 
 private enum HelperError: Error {
+    case incorrectInheritedPath(actual: String, expected: String)
+    case invalidInheritedDescriptor(Int32)
     case invalidArguments
     case invalidCommand(String)
+    case missingLeaseManifest
     case missingCommand
     case markerTimeout(String)
     case systemCall(String, Int32)

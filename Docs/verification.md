@@ -1,7 +1,7 @@
 ---
 type: Verification
-title: Version 1 verification map
-description: Maps each required version-one scenario to its primary automated regression coverage.
+title: AgentLease verification map
+description: Maps the original scenarios and AgentLease 2 shared-resource contracts to automated regression coverage.
 tags: [agentlease, testing, verification]
 timestamp: 2026-09-14T00:00:00+02:00
 status: implemented
@@ -14,7 +14,7 @@ isolated `AGENTLEASE_HOME` roots. Marker files and monotonic deadlines establish
 lifecycle barriers; fixed sleeps are not used as the primary synchronization
 mechanism. The root `make test` target builds the package and runs every suite.
 
-# Required-scenario map
+# Original required-scenario map
 
 | Scenario | Primary coverage |
 | ---: | --- |
@@ -47,6 +47,21 @@ mechanism. The root `make test` target builds the package and runs every suite.
 | 27 | `AgentLeasePathsTests.stateRootSelection`, unsafe-path tests, and `RunCommandTests.invalidInputBeforeState` |
 | 28 | `StatusProbeTests` and `StatusCommandTests.unexpectedEntries` |
 | 29 | `LeaseSetTests.metadataFailureIsBestEffort` and runner terminal-order tests |
+
+# AgentLease 2 regression map
+
+| Contract | Primary coverage |
+| --- | --- |
+| Shared holders coexist and exclude exclusive holders | `FileLockTests.sharedAndExclusiveCompatibility`, `RunCommandTests.sharedResourceCompatibility` |
+| Mixed modes use one sorted set and reject all duplicates | `ResourceNameTests.mixedLeaseModes`, `rejectsInvalidValues`, `RunCommandTests.rejectsCrossModeDuplicate` |
+| Shared holders never race on common metadata | `LeaseSetTests.sharedMetadataIsReadOnly` |
+| Status derives shared/exclusive mode from `flock` and handles release between probes | `StatusProbeTests.sharedModeAndReleaseRace`, `RunCommandTests.sharedResourceCompatibility` |
+| Manifest encoding is deterministic, bounded, sorted, and rejects unsafe fields | `ExecutionPolicyTests.inheritedLeaseManifest` |
+| Real `run` and `exec` children receive exact open descriptors, modes, and persistent paths | Run and exec `leaseDescriptorManifest` tests plus the helper's `verify-lease-manifest` command |
+| A cooperating child can establish one validated inherited exclusive lease without a second lock namespace | `InheritedExclusiveLeaseGuardTests` mode, inode, and live contention checks |
+| Stale manifest values are removed and overwritten | `ExecutionPolicyTests.childEnvironment` and both CLI manifest tests |
+| Run records retain each resource mode in schema 2 | Run and exec `leaseDescriptorManifest` tests |
+| Mixed shared/exclusive descriptors survive coordinator death through the child and retain exact compatibility | `RunCommandTests.mixedModeSupervisorDeathRetention` |
 
 # Platform evidence
 

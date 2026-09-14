@@ -16,16 +16,16 @@ It publishes `acquiring`, installs signal bridging, and acquires the complete
 sorted resource set before a child can start.
 
 After acquisition, the command publishes `acquired`, exports the canonical
-state root and run correlation fields, and starts the exact caller argument
-array through Swift Subprocess. Standard input is `/dev/null`; standard output
-and error remain attached to AgentLease's caller. Every owned descriptor stays
-`FD_CLOEXEC` in the coordinator and is inherited only through checked Darwin
-spawn actions.
+state root, run correlation fields, and version-1 lease descriptor manifest,
+and starts the exact caller argument array through Swift Subprocess. Standard
+input is `/dev/null`; standard output and error remain attached to AgentLease's
+caller. Every owned shared or exclusive descriptor stays `FD_CLOEXEC` in the
+coordinator and is inherited only through checked Darwin spawn actions.
 
 The child starts in a new session. Successful running publication records its
 PID before AgentLease waits for termination. Terminal record publication and
-best-effort terminal lock metadata are attempted before the coordinator closes
-its descriptors.
+best-effort terminal metadata for exclusive locks are attempted before the
+coordinator closes its descriptors. Shared locks never mutate common metadata.
 
 # Signal and failure behavior
 

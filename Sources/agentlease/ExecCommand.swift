@@ -31,7 +31,10 @@ private struct ExecExecutor: Sendable {
 
         let resources: ResourceSet
         do {
-            resources = try ResourceSet(options.resource)
+            resources = try ResourceSet(
+                exclusive: options.resource,
+                shared: options.sharedResource
+            )
         } catch {
             stderr(String(describing: error))
             return 64
@@ -65,7 +68,7 @@ private struct ExecExecutor: Sendable {
             return 70
         }
 
-        let childEnvironment = ChildEnvironment.build(
+        let baseChildEnvironment = ChildEnvironment.build(
             inherited: inheritedEnvironment,
             stateRoot: paths.rootPath,
             runID: runID,
@@ -79,6 +82,7 @@ private struct ExecExecutor: Sendable {
                 mode: .exec,
                 state: .acquiring,
                 resources: resources.resources.map(\.value),
+                resourceLeases: resources.leases,
                 label: options.label,
                 bead: options.bead,
                 coordinatorPID: getpid(),
@@ -117,8 +121,8 @@ private struct ExecExecutor: Sendable {
                 resources,
                 paths: paths,
                 waitSeconds: options.waitSeconds,
-                initialMetadata: { resource in
-                    metadata.value(resource: resource, state: .acquiring, childPID: nil)
+                initialMetadata: { lease in
+                    metadata.value(lease: lease, state: .acquiring, childPID: nil)
                 },
                 onContention: reportContention
             )
@@ -132,6 +136,21 @@ private struct ExecExecutor: Sendable {
         }
         reportMetadataIssues(lease)
 
+        let childEnvironment: [String: String]
+        do {
+            childEnvironment = try ChildEnvironment.addingLeaseDescriptorManifest(
+                lease.inheritedLeaseDescriptors,
+                to: baseChildEnvironment
+            )
+        } catch {
+            return finishFailure(
+                error,
+                lease: lease,
+                publication: publication,
+                metadata: metadata
+            )
+        }
+
         do {
             try publication.publishAcquired()
         } catch {
@@ -142,8 +161,8 @@ private struct ExecExecutor: Sendable {
                 metadata: metadata
             )
         }
-        lease.updateMetadata { resource in
-            metadata.value(resource: resource, state: .acquired, childPID: nil)
+        lease.updateMetadata { lease in
+            metadata.value(lease: lease, state: .acquired, childPID: nil)
         }
         reportMetadataIssues(lease)
         stderr("acquired resources: \(resources.environmentValue)")
@@ -159,8 +178,8 @@ private struct ExecExecutor: Sendable {
                 metadata: metadata
             )
         }
-        lease.updateMetadata { resource in
-            metadata.value(resource: resource, state: .handoffPrepared, childPID: nil)
+        lease.updateMetadata { lease in
+            metadata.value(lease: lease, state: .handoffPrepared, childPID: nil)
         }
         reportMetadataIssues(lease)
 
@@ -202,8 +221,8 @@ private struct ExecExecutor: Sendable {
             stderr("could not publish failure record: \(error)")
         }
         if let lease {
-            lease.updateMetadata { resource in
-                metadata.value(resource: resource, state: .failed, childPID: nil)
+            lease.updateMetadata { lease in
+                metadata.value(lease: lease, state: .failed, childPID: nil)
             }
             reportMetadataIssues(lease)
             lease.release()
@@ -231,6 +250,9 @@ private struct ExecExecutor: Sendable {
             return (error.failure, 70)
         }
         if let error = error as? AtomicJSONStoreError {
+            return (error.failure, 70)
+        }
+        if let error = error as? InheritedLeaseManifestError {
             return (error.failure, 70)
         }
         if let error = error as? DirectProcessReplacementError {

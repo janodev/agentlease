@@ -64,6 +64,20 @@ public final class LeaseSet: Sendable {
         state.withLock { $0.locks.compactMap(\.inheritedDescriptor) }
     }
 
+    public var inheritedLeaseDescriptors: [InheritedLeaseDescriptor] {
+        state.withLock { state in
+            state.locks.compactMap { lock in
+                guard let descriptor = lock.inheritedDescriptor else { return nil }
+                return InheritedLeaseDescriptor(
+                    resource: lock.resource.value,
+                    mode: lock.mode,
+                    descriptor: descriptor,
+                    path: lock.persistentPath
+                )
+            }
+        }
+    }
+
     public var metadataWriteIssues: [MetadataWriteIssue] {
         state.withLock { $0.metadataWriteIssues }
     }
@@ -72,12 +86,18 @@ public final class LeaseSet: Sendable {
         state.withLock { $0.locks.map(\.resource) }
     }
 
+    public var leases: [ResourceLease] {
+        state.withLock { state in
+            state.locks.map { ResourceLease(resource: $0.resource, mode: $0.mode) }
+        }
+    }
+
     public static func acquire(
         _ resources: ResourceSet,
         paths: AgentLeasePaths,
         waitSeconds: Double?,
-        initialMetadata: @Sendable (ResourceName) -> LockMetadata,
-        onContention: @Sendable (ResourceName, BoundedMetadataRead) -> Void = { _, _ in }
+        initialMetadata: @Sendable (ResourceLease) -> LockMetadata,
+        onContention: @Sendable (ResourceLease, BoundedMetadataRead) -> Void = { _, _ in }
     ) async throws -> LeaseSet {
         try await acquireInternal(
             resources,
@@ -93,9 +113,9 @@ public final class LeaseSet: Sendable {
         _ resources: ResourceSet,
         paths: AgentLeasePaths,
         waitSeconds: Double?,
-        initialMetadata: @Sendable (ResourceName) -> LockMetadata,
+        initialMetadata: @Sendable (ResourceLease) -> LockMetadata,
         metadataWriteFailure: FileLockError,
-        onContention: @Sendable (ResourceName, BoundedMetadataRead) -> Void = { _, _ in }
+        onContention: @Sendable (ResourceLease, BoundedMetadataRead) -> Void = { _, _ in }
     ) async throws -> LeaseSet {
         try await acquireInternal(
             resources,
@@ -111,9 +131,9 @@ public final class LeaseSet: Sendable {
         _ resources: ResourceSet,
         paths: AgentLeasePaths,
         waitSeconds: Double?,
-        initialMetadata: @Sendable (ResourceName) -> LockMetadata,
+        initialMetadata: @Sendable (ResourceLease) -> LockMetadata,
         metadataWriteFailure: FileLockError?,
-        onContention: @Sendable (ResourceName, BoundedMetadataRead) -> Void
+        onContention: @Sendable (ResourceLease, BoundedMetadataRead) -> Void
     ) async throws -> LeaseSet {
         if let waitSeconds,
            !waitSeconds.isFinite || waitSeconds < 0 {
@@ -123,10 +143,11 @@ public final class LeaseSet: Sendable {
 
         var openedLocks: [FileLock] = []
         do {
-            for resource in resources.resources {
+            for lease in resources.leases {
                 openedLocks.append(
                     try FileLock(
-                        resource: resource,
+                        resource: lease.resource,
+                        mode: lease.mode,
                         paths: paths,
                         metadataWriteFailure: metadataWriteFailure
                     )
@@ -154,10 +175,15 @@ public final class LeaseSet: Sendable {
                     attempts += 1
                     if try lock.tryAcquire() {
                         acquiredCount += 1
-                        if let issue = writeMetadata(
-                            initialMetadata(lock.resource),
-                            to: lock
-                        ) {
+                        let resourceLease = ResourceLease(
+                            resource: lock.resource,
+                            mode: lock.mode
+                        )
+                        // Shared holders must not race by truncating and rewriting one
+                        // common diagnostic payload. Their mode remains in the run
+                        // record and inherited descriptor manifest.
+                        if lock.mode == .exclusive,
+                           let issue = writeMetadata(initialMetadata(resourceLease), to: lock) {
                             metadataIssues.append(issue)
                         }
                         break
@@ -165,7 +191,10 @@ public final class LeaseSet: Sendable {
 
                     if !didReportContention {
                         didReportContention = true
-                        onContention(lock.resource, lock.readMetadata())
+                        onContention(
+                            ResourceLease(resource: lock.resource, mode: lock.mode),
+                            lock.readMetadata()
+                        )
                     }
                     guard let delay = deadline.pollingDelay else {
                         throw LeaseSetError.timedOut(lock.resource.value)
@@ -213,12 +242,14 @@ public final class LeaseSet: Sendable {
     }
 
     public func updateMetadata(
-        _ metadata: @Sendable (ResourceName) -> LockMetadata
+        _ metadata: @Sendable (ResourceLease) -> LockMetadata
     ) {
         state.withLock { state in
             var transitionIssues: [MetadataWriteIssue] = []
-            for lock in state.locks {
-                if let issue = Self.writeMetadata(metadata(lock.resource), to: lock) {
+            // Shared holders leave the common diagnostic file untouched.
+            for lock in state.locks where lock.mode == .exclusive {
+                let lease = ResourceLease(resource: lock.resource, mode: lock.mode)
+                if let issue = Self.writeMetadata(metadata(lease), to: lock) {
                     transitionIssues.append(issue)
                 }
             }

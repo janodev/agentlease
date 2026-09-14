@@ -29,6 +29,7 @@ struct StatusProbeTests {
         #expect(!held.requiresFailureExit)
         let heldEntry = try #require(held.report.entries.first)
         #expect(heldEntry.availability == .held)
+        #expect(heldEntry.heldMode == .exclusive)
         #expect(heldEntry.metadataStatus == .valid)
         #expect(heldEntry.resource == resource.value)
         #expect(heldEntry.lastOwner == metadata)
@@ -41,10 +42,47 @@ struct StatusProbeTests {
         #expect(!free.requiresFailureExit)
         let freeEntry = try #require(free.report.entries.first)
         #expect(freeEntry.availability == .free)
+        #expect(freeEntry.heldMode == nil)
         #expect(freeEntry.metadataStatus == .valid)
         #expect(freeEntry.lastOwner == metadata)
         #expect(try Data(contentsOf: lockURL) == originalData)
         #expect(try inode(at: lockURL) == originalInode)
+    }
+
+    @Test("Shared ownership mode is kernel-derived and release between probes becomes free")
+    func sharedModeAndReleaseRace() throws {
+        let parent = try makeAgentLeaseTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: parent) }
+        let paths = try AgentLeasePaths.open(
+            selectedRoot: parent.appendingPathComponent("state").path
+        )
+        let resource = try ResourceName("status:shared")
+        let first = try FileLock(resource: resource, mode: .shared, paths: paths)
+        let second = try FileLock(resource: resource, mode: .shared, paths: paths)
+        #expect(try first.tryAcquire())
+        #expect(try second.tryAcquire())
+
+        let held = StatusProbe.inspect(paths: paths)
+        let heldEntry = try #require(held.report.entries.first)
+        #expect(heldEntry.availability == .held)
+        #expect(heldEntry.heldMode == .shared)
+
+        first.release()
+        second.release()
+        let raceOwner = try FileLock(resource: resource, mode: .shared, paths: paths)
+        #expect(try raceOwner.tryAcquire())
+        var released = false
+        let releasedBetweenProbes = StatusProbe.inspect(
+            paths: paths,
+            afterExclusiveContention: {
+                guard !released else { return }
+                released = true
+                raceOwner.release()
+            }
+        )
+        let freeEntry = try #require(releasedBetweenProbes.report.entries.first)
+        #expect(freeEntry.availability == .free)
+        #expect(freeEntry.heldMode == nil)
     }
 
     @Test("Absent, corrupt, oversized, and mismatched metadata preserve kernel results")

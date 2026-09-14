@@ -39,6 +39,7 @@ struct ExecutionPolicyTests {
             "AGENTLEASE_HELD_RESOURCES": "stale",
             "AGENTLEASE_HOME": "/stale",
             "AGENTLEASE_RUN_ID": "stale",
+            "AGENTLEASE_LEASE_DESCRIPTORS": "stale",
             "UNRELATED": "kept",
         ]
         let environment = ChildEnvironment.build(
@@ -53,7 +54,75 @@ struct ExecutionPolicyTests {
         #expect(environment["AGENTLEASE_RUN_ID"] == "new-run")
         #expect(environment["AGENTLEASE_HELD_RESOURCES"] == "a,b")
         #expect(environment["AGENTLEASE_BEAD_ID"] == nil)
+        #expect(environment["AGENTLEASE_LEASE_DESCRIPTORS"] == nil)
         #expect(environment["UNRELATED"] == "kept")
+    }
+
+    @Test("Inherited lease manifest is deterministic, bounded, and validated")
+    func inheritedLeaseManifest() throws {
+        let leases = [
+            InheritedLeaseDescriptor(
+                resource: "a:shared",
+                mode: .shared,
+                descriptor: 64,
+                path: "/tmp/state/locks/\(try ResourceName("a:shared").lockFileName)"
+            ),
+            InheritedLeaseDescriptor(
+                resource: "z:exclusive",
+                mode: .exclusive,
+                descriptor: 65,
+                path: "/tmp/state/locks/\(try ResourceName("z:exclusive").lockFileName)"
+            ),
+        ]
+        let value = try InheritedLeaseManifest(leases: leases).environmentValue()
+        let repeatedValue = try InheritedLeaseManifest(leases: leases).environmentValue()
+        #expect(value == repeatedValue)
+        let expected = "{\"leases\":[{\"descriptor\":64,\"mode\":\"shared\","
+            + "\"path\":\"\(leases[0].path)\",\"resource\":\"a:shared\"},"
+            + "{\"descriptor\":65,\"mode\":\"exclusive\","
+            + "\"path\":\"\(leases[1].path)\",\"resource\":\"z:exclusive\"}],"
+            + "\"schemaVersion\":1}"
+        #expect(value == expected)
+        #expect(value.utf8.count <= InheritedLeaseManifest.maximumEncodedBytes)
+        #expect(try InheritedLeaseManifest.decodeEnvironmentValue(value).leases == leases)
+
+        let unsorted = [leases[1], leases[0]]
+        #expect(throws: InheritedLeaseManifestError.unsortedResources) {
+            _ = try InheritedLeaseManifest(leases: unsorted).environmentValue()
+        }
+        let controlledPath = InheritedLeaseDescriptor(
+            resource: "a:shared",
+            mode: .shared,
+            descriptor: 64,
+            path: "/tmp/control\n/locks/\(try ResourceName("a:shared").lockFileName)"
+        )
+        #expect(throws: InheritedLeaseManifestError.self) {
+            _ = try InheritedLeaseManifest(leases: [controlledPath]).environmentValue()
+        }
+
+        let oversized = try (0..<ResourceSet.maximumCount).map { index in
+            let resource = try ResourceName(String(format: "r%02d", index))
+            return InheritedLeaseDescriptor(
+                resource: resource.value,
+                mode: .shared,
+                descriptor: Int32(FileLock.minimumOwnedDescriptor) + Int32(index),
+                path: "/" + String(repeating: "x", count: 3_000)
+                    + "/locks/" + resource.lockFileName
+            )
+        }
+        #expect(throws: InheritedLeaseManifestError.self) {
+            _ = try InheritedLeaseManifest(leases: oversized).environmentValue()
+        }
+    }
+
+    @Test("Version one lock metadata decodes as exclusive")
+    func legacyLockMetadata() throws {
+        let value = """
+        {"schemaVersion":1,"resourceName":"legacy","runID":"run","coordinatorPID":1,"childPID":null,"mode":"run","state":"running","label":null,"bead":null,"acquiredAt":"time"}
+        """
+        let metadata = try JSONDecoder().decode(LockMetadata.self, from: Data(value.utf8))
+        #expect(metadata.schemaVersion == 1)
+        #expect(metadata.leaseMode == .exclusive)
     }
 
     @Test("Executable paths are lexical and executable symlinks are allowed")

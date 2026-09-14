@@ -8,17 +8,20 @@ timestamp: 2026-09-13T23:10:00+02:00
 
 # Ownership model
 
-`ResourceSet` validates the complete request before filesystem access and sorts
-case-sensitive ASCII resource names by UTF-8 bytes. A lock filename is the
-lowercase SHA-256 digest of the validated public resource name.
+`ResourceSet` validates the complete shared and exclusive request before
+filesystem access, rejects duplicate names across both modes, and sorts the one
+combined set of case-sensitive ASCII resource names by UTF-8 bytes. A lock
+filename is the lowercase SHA-256 digest of the validated public resource name.
 
 `LeaseSet` opens every persistent lock file before its monotonic wait budget
 starts, then acquires in the shared sorted order with nonblocking `flock` calls.
+Exclusive leases use `LOCK_EX`; shared leases use `LOCK_SH`.
 Cancellation is checked before every attempt and after full acquisition. A
 failed or cancelled partial acquisition closes acquired descriptors in reverse
 order and closes every remaining opened descriptor.
 
-After acquisition, `FileLock` duplicates its file description with
+After acquisition, `FileLock` retains the requested mode and persistent path,
+then duplicates its file description with
 `F_DUPFD_CLOEXEC` at descriptor 64 or above and closes the original descriptor.
 Production release closes the retained descriptor without calling `LOCK_UN`.
 This is required so a supervised child or direct replacement can retain the
@@ -41,9 +44,14 @@ never unlinked or replaced.
 
 # Diagnostic persistence
 
-Lock metadata is bounded to 4,096 bytes and rewritten in place only while the
-lock is held. Its failure is collected as a diagnostic and never changes lock
-ownership.
+Lock metadata is bounded to 4,096 bytes and rewritten in place only while an
+exclusive lock is held. Shared holders never mutate the common metadata file,
+because multiple in-place truncate/write sequences would race. Metadata failure
+is collected as a diagnostic and never changes lock ownership.
+
+Every acquired set can produce the bounded, deterministic
+`AGENTLEASE_LEASE_DESCRIPTORS` manifest described in
+[Shared resources and inherited descriptor manifest](shared-resources.md).
 
 Run records use an exclusively created mode-`0600` temporary file in the
 retained `runs` directory. The store writes completely, syncs the file, renames

@@ -25,12 +25,28 @@ struct ResourceNameTests {
         #expect(throws: ResourceValidationError.duplicate("same")) {
             _ = try ResourceSet(["same", "same"])
         }
+        #expect(throws: ResourceValidationError.duplicate("same")) {
+            _ = try ResourceSet(exclusive: ["same"], shared: ["same"])
+        }
         #expect(throws: ResourceValidationError.emptySet) {
             _ = try ResourceSet([])
         }
         #expect(throws: ResourceValidationError.self) {
             _ = try ResourceName("a" + String(repeating: "b", count: 256))
         }
+    }
+
+    @Test("Shared and exclusive resources form one sorted acquisition set")
+    func mixedLeaseModes() throws {
+        let resources = try ResourceSet(
+            exclusive: ["z:exclusive", "b:exclusive"],
+            shared: ["a:shared", "m:shared"]
+        )
+
+        #expect(resources.resources.map(\.value) == [
+            "a:shared", "b:exclusive", "m:shared", "z:exclusive",
+        ])
+        #expect(resources.leases.map(\.mode) == [.shared, .exclusive, .shared, .exclusive])
     }
 
     @Test("Resource count and environment representation are bounded")
