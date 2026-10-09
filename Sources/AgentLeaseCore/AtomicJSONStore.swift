@@ -53,6 +53,8 @@ public final class AtomicJSONStore: Sendable {
     }
 
     public func replace<T: Encodable>(_ value: T, named name: String) throws {
+        let claim = try RegistryGate.shared(paths: paths)
+        defer { claim.release() }
         guard Self.isSafeRecordName(name) else {
             throw AtomicJSONStoreError.invalidName(name)
         }

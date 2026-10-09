@@ -25,6 +25,28 @@ exclude shared locks, descriptor environment metadata, or schema evolution are
 superseded by
 [Shared resources and inherited descriptor manifest](shared-resources.md).
 
+## Version 2.1 retention amendment
+
+AgentLease 2.1.0 adds preview and execute modes for `cleanup`, with a seven-day
+default age, explicit lock/run preservation options, and daily opt-in automatic
+cleanup. The run-record and status schemas remain at version 2; the inherited
+resource manifest remains at version 1 and contains no registry descriptor.
+
+One permanent root `.registry.lock` coordinates all resource opens awaiting
+ownership, initial run publication through acquisition, atomic JSON replacement,
+status inspection, and inherited exclusive verification with shared claims.
+Cleanup attempts an exclusive registry claim without waiting. An old resource
+inode may be unlinked only while that claim and an independently obtained
+exclusive resource flock are held, after revalidating safe pathname identity.
+Any held or unsafe referenced resource preserves an old run record, covering
+inherited descendants even after the coordinator has exited.
+
+Automatic cleanup requires `AGENTLEASE_AUTO_CLEANUP=1`; integrations can preserve
+retained evidence with bounded `AGENTLEASE_CLEANUP_KEEP_LOCK_DIGESTS`. Before
+enabling removal, ensure older acquisitions and ownership-establishing operations
+are no longer in flight. Existing held applications may retain their leases.
+The complete contract is [Coordinated retention](retention.md).
+
 ## Objective
 
 Build a small macOS command-line tool that lets cooperating coding agents run a
@@ -124,15 +146,19 @@ Unicode scalar in the C0/C1 control ranges (`U+0000...U+001F` or
 diagnostics. Format characters outside those ranges remain valid, including the
 zero-width joiner used in emoji sequences.
 
-Start the monotonic wait budget immediately before the first lock attempt,
-after validation, executable preflight, file opening, and initial record
-publication. Check cancellation before every lock attempt, including zero-wait
+Start the monotonic wait budget before shared registry admission, after
+validation, executable preflight, and optional automatic cleanup. Registry
+admission, initial record publication, file opening, and resource acquisition
+share that budget. Check cancellation before every lock attempt, including zero-wait
 attempts. Zero means a single nonblocking attempt at each resource, with no
 retry: an entirely free set may still succeed. For a positive budget, check
 cancellation and expiry before each attempt and bound polling delays by the
 remaining budget. Saturate duration/deadline conversion rather than overflowing
 for a very large finite value. The budget covers acquisition, not execution.
 After the final successful attempt, check cancellation again before spawn.
+Registry admission uses cancellation-aware nonblocking polling; a signal before
+admission can terminate `run` without an acquiring record or child. Synchronous
+registry callers use a bounded one-second admission wait.
 
 Use a shell only when the caller explicitly supplies one, for example:
 
@@ -227,16 +253,21 @@ Create this layout:
 
 ```text
 ~/.agentlease/
+  .registry.lock
+  .cleanup-last-run
   locks/
     <sha256>.lock
   runs/
     <run-id>.json
 ```
 
-Create directories as mode `0700` and regular files as mode `0600`. Lock files
-are persistent and must never be unlinked during normal operation, cleanup, or
-schema migration. Replacing or unlinking a lock file can split ownership across
-two inodes, allowing two callers to believe they own the same resource.
+Create directories as mode `0700` and regular files as mode `0600`. The root
+`.registry.lock` is permanent and must never be unlinked or replaced.
+`.cleanup-last-run` appears only when automatic cleanup is enabled. Resource
+lock files retain their inode throughout pending acquisition and active
+ownership. Old idle files may be retired only by the coordinated version-2.1
+cleanup contract above. Unguarded replacement or unlinking can split ownership
+across two inodes, allowing two callers to believe they own the same resource.
 
 Treat `AGENTLEASE_HOME` as explicitly set when the environment contains the key,
 including when its value is empty. An explicitly set value must be a nonempty
@@ -278,7 +309,8 @@ Directory creation must handle a concurrent creator by opening and validating
 the resulting directory. Ensure exact modes on newly created objects even under
 a restrictive umask; do not chmod pre-existing objects. Replacing or relocating
 the root or its managed directories during use is outside the cooperative
-contract, just as replacing a persistent lock file is.
+contract, as is unguarded replacement of a resource lock or replacement of the
+permanent registry lock.
 
 `AGENTLEASE_HOME` exists for isolated tests. Production commands that need to
 coordinate must use the same root.
@@ -302,7 +334,8 @@ closing all unknown descriptors, which remains outside the cooperative contract.
 Required acquisition algorithm:
 
 1. Validate every requested resource, reject duplicates, and sort the set.
-2. Open all corresponding persistent lock files safely.
+2. Obtain the shared registry claims before opening all corresponding resource
+   files safely; retain each claim until that file is acquired or closed.
 3. Acquire each lock in sorted order.
 4. If one is busy, retain already acquired lower-ordered locks while waiting.
    Because every client uses the same order, this cannot form a lock cycle.
@@ -719,7 +752,8 @@ If a resource remains held after its coordinator PID has disappeared, assume an
 inherited child or descendant still owns the file description. Operational
 recovery is to identify the process with `lsof` on the persistent lock path and
 terminate that workload. Never delete the lock file: deletion does not revoke
-the old inode lock and would let a new process lock a replacement inode.
+the held inode lock and would let a new process lock a replacement inode.
+Coordinated cleanup skips held resources and can retire idle files afterward.
 
 ## Exit codes and diagnostics
 
@@ -952,7 +986,8 @@ milestones.
 The first release is complete when:
 
 - all required real-subprocess tests pass repeatedly without timing flakes;
-- no path removes or replaces a persistent lock file;
+- no path removes or replaces the permanent registry lock, and resource
+  retirement satisfies the version-2.1 registry, kernel-lock, and inode checks;
 - no child starts with only a partial resource set;
 - supervised cancellation always waits for reaping before closing the parent's
   lock descriptors;

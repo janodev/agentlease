@@ -58,6 +58,8 @@ public enum InheritedExclusiveLeaseGuard {
         }
 
         let paths = try AgentLeasePaths.open(environment: environment)
+        let claim = try RegistryGate.shared(paths: paths)
+        defer { claim.release() }
         let expectedPath = paths.rootPath + "/locks/" + resource.lockFileName
         guard lease.path == expectedPath else {
             throw InheritedExclusiveLeaseGuardError.descriptorIdentityMismatch

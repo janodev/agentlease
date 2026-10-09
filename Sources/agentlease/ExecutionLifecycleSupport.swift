@@ -130,3 +130,15 @@ func stderr(_ message: String) {
     let sanitized = AgentLeaseFailure.bounded(AgentLeaseFailure.sanitized(message))
     FileHandle.standardError.write(Data("agentlease: \(sanitized)\n".utf8))
 }
+
+/// Registry admission and resource acquisition share the user's one wait budget.
+func remainingAcquisitionWait(_ seconds: Double?, since started: UInt64) throws -> Double? {
+    guard let seconds else { return nil }
+    // Explicit zero requests one immediate probe; an expired positive deadline
+    // must never become that distinct zero-wait policy after publication.
+    guard seconds > 0 else { return 0 }
+    let elapsed = Double(DispatchTime.now().uptimeNanoseconds - started) / 1_000_000_000
+    let remaining = seconds - elapsed
+    guard remaining > 0 else { throw LeaseSetError.timedOut("registry") }
+    return remaining
+}

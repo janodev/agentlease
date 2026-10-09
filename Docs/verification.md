@@ -1,9 +1,8 @@
 ---
 type: Verification
 title: AgentLease verification map
-description: Maps the original scenarios and AgentLease 2 shared-resource contracts to automated regression coverage.
+description: Maps original scenarios, shared leases, and coordinated retention to automated regression coverage.
 tags: [agentlease, testing, verification]
-timestamp: 2026-09-14T00:00:00+02:00
 status: implemented
 ---
 
@@ -62,6 +61,22 @@ mechanism. The root `make test` target builds the package and runs every suite.
 | Stale manifest values are removed and overwritten | `ExecutionPolicyTests.childEnvironment` and both CLI manifest tests |
 | Run records retain each resource mode in schema 2 | Run and exec `leaseDescriptorManifest` tests |
 | Mixed shared/exclusive descriptors survive coordinator death through the child and retain exact compatibility | `RunCommandTests.mixedModeSupervisorDeathRetention` |
+
+# AgentLease 2.1 retention regression map
+
+The [retention contract](retention.md) uses kernel ownership as the deletion
+oracle, with explicit assertions on file existence and inode identity.
+
+| Contract | Primary coverage |
+| --- | --- |
+| Preopened waiters exclude retirement; unrelated acquisition still succeeds; held inodes survive and retired resources recreate safely | `RegistryRetentionTests.pendingOpenAndRecreation` |
+| Shared and exclusive holders preserve every historical record referencing their resource | `RegistryRetentionTests.heldResourcesProtectHistoricalRuns` |
+| Preview preserves files; old inactive history expires; recent completion and live acquiring coordinators remain | `RegistryRetentionTests.recordRetention` |
+| Unsafe links, permissions, directories, unexpected names, and malformed JSON remain untouched with reported errors | `RegistryRetentionTests.unsafeEntriesFailClosed`, `CleanupCommandTests.unsafeRecordFailure` |
+| Evidence protections, fresh locks, default-off automatic cleanup, invalid protection values, daily throttle, busy skips, and permanent gate identity | `RegistryRetentionTests.keepAndDailyThrottle`, `pendingOpenAndRecreation` |
+| Production CLI preview/execute JSON honors digest, canonical path, and run-ID protection flags | `CleanupCommandTests.previewExecuteAndEvidenceKeep` |
+| A real inherited descendant keeps the old resource inode and historical run after direct replacement exits | `CleanupCommandTests.descendantHeldResource` |
+| SIGTERM cancels registry admission before publishing a record or starting a child while cleanup retains the exclusive gate | `CleanupCommandTests.signalDuringRegistryAdmission` |
 
 # Platform evidence
 

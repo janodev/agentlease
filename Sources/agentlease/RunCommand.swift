@@ -75,6 +75,13 @@ private struct RunExecutor: Sendable {
             return 70
         }
 
+        // Maintenance runs before any acquisition claim and never blocks on busy work.
+        do {
+            _ = try LeaseCleanup.automatic(paths: paths, environment: inheritedEnvironment)
+        } catch {
+            stderr("automatic cleanup skipped: \(error)")
+        }
+
         let baseChildEnvironment = ChildEnvironment.build(
             inherited: inheritedEnvironment,
             stateRoot: paths.rootPath,
@@ -117,13 +124,6 @@ private struct RunExecutor: Sendable {
             return 70
         }
         defer { relay.restore() }
-
-        do {
-            try publication.publishInitial()
-        } catch {
-            stderr("could not publish acquiring record: \(error)")
-            return 70
-        }
 
         let metadata = MetadataContext(
             acquiredAt: startedAt,
@@ -180,12 +180,31 @@ private struct RunExecutor: Sendable {
         metadata: MetadataContext,
         relay: SignalRelay
     ) async -> Int32 {
+        let admissionStarted = DispatchTime.now().uptimeNanoseconds
+        let acquisitionClaim: RegistryClaim
+        do {
+            acquisitionClaim = try await RegistryGate.shared(paths: paths, waitSeconds: options.waitSeconds)
+        } catch {
+            // No acquiring record exists until admission succeeds. A trapped
+            // signal cancels this task through the enclosing relay event group.
+            let classified = classify(error, receivedSignal: relay.firstSignal)
+            stderr(classified.failure.description)
+            return classified.exitCode
+        }
+        defer { acquisitionClaim.release() }
+        do {
+            try publication.publishInitial()
+        } catch {
+            stderr("could not publish acquiring record: \(error)")
+            return 70
+        }
+
         let lease: LeaseSet
         do {
             lease = try await LeaseSet.acquire(
                 resources,
                 paths: paths,
-                waitSeconds: options.waitSeconds,
+                waitSeconds: try remainingAcquisitionWait(options.waitSeconds, since: admissionStarted),
                 initialMetadata: { lease in
                     metadata.value(lease: lease, state: .acquiring, childPID: nil)
                 },
@@ -200,6 +219,7 @@ private struct RunExecutor: Sendable {
                 relay: relay
             )
         }
+        acquisitionClaim.release()
         reportMetadataIssues(lease)
 
         let childEnvironment: [String: String]
@@ -396,6 +416,9 @@ private struct RunExecutor: Sendable {
         }
         if let error = error as? FileLockError {
             return (error.failure, 70)
+        }
+        if let error = error as? AgentLeaseFailure {
+            return (error, 70)
         }
         if let error = error as? AtomicJSONStoreError {
             return (error.failure, 70)

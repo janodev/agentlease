@@ -1,3 +1,10 @@
+---
+type: Reference
+title: AgentLease
+description: Documents installation, named-resource execution, and coordinated retention for AgentLease.
+tags: [agentlease, macos, locking, retention]
+---
+
 # AgentLease
 
 AgentLease 2 coordinates local agent workflows with shared or exclusive named resources.
@@ -24,8 +31,9 @@ install -m 755 .build/release/agentlease "$HOME/.local/bin/agentlease"
 
 The destination directory must already exist. A packaged release can install
 the same built `agentlease` executable; no runtime service or daemon is needed.
-This contract reports `agentlease --version` as `2.0.0`; the major version marks
-the run-record and status JSON schema upgrade from version 1 to version 2.
+This contract reports `agentlease --version` as `2.1.0`. Run-record and status
+JSON retain schema version 2, and the inherited descriptor manifest retains
+schema version 1. Version 2.1 adds coordinated retention.
 
 ## Use
 
@@ -139,8 +147,8 @@ This inheritance is intentional crash safety. If a `run` coordinator receives
 the JSON record may remain `running`. A background descendant can similarly
 retain a lock after its direct parent exits. Diagnose that case with `lsof` on
 the persistent lock file and terminate the workload that owns its descriptor.
-Never delete a lock file: deletion cannot revoke the old inode lock and can
-split ownership between two inodes.
+Manually unlinking a held lock cannot revoke the old inode lock and can split
+ownership between two inodes. Use coordinated cleanup to retire idle files.
 
 Child commands are cooperative. A command that deliberately closes or unlocks
 unknown inherited descriptors can defeat retention.
@@ -157,6 +165,46 @@ because concurrent truncate-and-write operations would race. Run records and
 the inherited manifest retain every requested mode. `status` derives both
 availability and a held mode from kernel lock probes; metadata remains only
 historical diagnostics.
+
+## Coordinated retention
+
+Preview old idle resource locks and run history, then execute the same policy:
+
+```sh
+agentlease cleanup --json
+agentlease cleanup --execute --json
+```
+
+The default age is seven days. `--older-than-days <value>` accepts a finite
+nonnegative age. Repeat `--keep-lock-digest <sha256>`,
+`--keep-lock-path <canonical-path>`, and `--keep-run-id <uuid>` to preserve
+descriptor handoffs, replay evidence, or selected diagnostics. At most 1,024
+protections are accepted. A lock protection preserves that inode; use a run-ID
+protection when its historical JSON must also remain.
+
+The permanent root `.registry.lock` coordinates acquisition, status, record
+publication, inherited verification, and cleanup. Cleanup skips a busy registry
+immediately. It removes an old resource file only after taking an independent
+exclusive flock and confirming the safe pathname still names that inode.
+Old run records remain whenever any referenced resource is held or unsafe,
+including leases retained by descendants after the coordinator exits. This
+conservative rule can retain history beyond seven days while resources remain
+in use. Recent completion or file modification also preserves a record.
+
+Before executing cleanup in an existing state root, ensure every process that
+can acquire or re-establish ownership uses AgentLease 2.1 coordination and no
+older acquisition is in flight. Existing held applications can remain open;
+their kernel locks protect their resource files. Preserve idle descriptor or
+replay references explicitly with the keep options.
+
+Automatic cleanup is disabled unless an integration sets
+`AGENTLEASE_AUTO_CLEANUP=1`. It runs before `run` or `exec` acquisition, at most
+once per 24 hours per state root when the registry is available. Integrations
+can additionally set `AGENTLEASE_CLEANUP_KEEP_LOCK_DIGESTS` to a comma-separated
+list of lowercase 64-character SHA-256 digests, limited to 1,024 entries and
+131,072 UTF-8 bytes. Automatic cleanup diagnostics preserve the command's normal
+result. `status` stays read-only. See [retention](Docs/retention.md) for the
+coordination and rollout contract.
 
 ## Exit behavior
 

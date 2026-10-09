@@ -96,6 +96,19 @@ public enum StatusProbe {
         paths: AgentLeasePaths,
         afterExclusiveContention: () -> Void
     ) -> StatusProbeResult {
+        let claim: RegistryClaim
+        do {
+            claim = try RegistryGate.shared(paths: paths)
+        } catch {
+            let failure = (error as? AgentLeaseFailure) ?? AgentLeaseFailure(
+                kind: .stateIO, operation: "statusRegistry", message: String(describing: error)
+            )
+            return StatusProbeResult(
+                report: StatusReport(stateRoot: paths.rootPath, entries: [], errors: [failure]),
+                requiresFailureExit: true
+            )
+        }
+        defer { claim.release() }
         let enumeration = enumerate(paths: paths)
         var entries: [StatusEntry] = []
         var requiresFailureExit = !enumeration.errors.isEmpty

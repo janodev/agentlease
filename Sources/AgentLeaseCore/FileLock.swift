@@ -72,6 +72,7 @@ public final class FileLock {
     public let persistentPath: String
     public let resource: ResourceName
 
+    private var acquisitionClaim: RegistryClaim?
     private var acquired = false
     private var descriptor: Int32
     private let metadataWriteFailure: FileLockError?
@@ -99,7 +100,9 @@ public final class FileLock {
         self.mode = mode
         persistentPath = paths.rootPath + "/locks/" + resource.lockFileName
         self.metadataWriteFailure = metadataWriteFailure
+        let claim = try RegistryGate.shared(paths: paths)
         descriptor = try Self.openPersistentLockFile(resource: resource, paths: paths)
+        acquisitionClaim = claim
     }
 
     deinit {
@@ -149,6 +152,8 @@ public final class FileLock {
             let duplicationError = errno
             descriptor = -1
             _ = Darwin.close(originalDescriptor)
+            acquisitionClaim?.release()
+            acquisitionClaim = nil
             throw FileLockError.systemCall(
                 operation: "fcntl(F_DUPFD_CLOEXEC)",
                 resource: resource.value,
@@ -159,6 +164,16 @@ public final class FileLock {
         descriptor = ownedDescriptor
         acquired = true
         _ = Darwin.close(originalDescriptor)
+        // Timestamp updates are safe for concurrent shared holders: no JSON rewrite.
+        guard Darwin.futimens(ownedDescriptor, nil) == 0 else {
+            let timestampError = errno
+            release()
+            throw FileLockError.systemCall(
+                operation: "futimens", resource: resource.value, errorNumber: timestampError
+            )
+        }
+        acquisitionClaim?.release()
+        acquisitionClaim = nil
         return true
     }
 
@@ -234,6 +249,8 @@ public final class FileLock {
         descriptor = -1
         acquired = false
         _ = Darwin.close(descriptorToClose)
+        acquisitionClaim?.release()
+        acquisitionClaim = nil
     }
 
     public func writeMetadata(_ data: Data) throws {
@@ -297,7 +314,7 @@ public final class FileLock {
             Darwin.openat(
                 paths.locksDirectoryDescriptor,
                 pointer,
-                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC,
                 0o600
             )
         }
@@ -308,7 +325,7 @@ public final class FileLock {
                 Darwin.openat(
                     paths.locksDirectoryDescriptor,
                     pointer,
-                    O_RDWR | O_NOFOLLOW | O_CLOEXEC
+                    O_RDWR | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
                 )
             }
         }
@@ -329,6 +346,7 @@ public final class FileLock {
                 )
             }
             try validate(descriptor: descriptor, resource: resource)
+            try SafeStateFile.validate(descriptor, directory: paths.locksDirectoryDescriptor, name: fileName)
             return descriptor
         } catch {
             _ = Darwin.close(descriptor)

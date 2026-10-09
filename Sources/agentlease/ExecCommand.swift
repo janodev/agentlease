@@ -68,6 +68,13 @@ private struct ExecExecutor: Sendable {
             return 70
         }
 
+        // Maintenance runs before any acquisition claim and never blocks on busy work.
+        do {
+            _ = try LeaseCleanup.automatic(paths: paths, environment: inheritedEnvironment)
+        } catch {
+            stderr("automatic cleanup skipped: \(error)")
+        }
+
         let baseChildEnvironment = ChildEnvironment.build(
             inherited: inheritedEnvironment,
             stateRoot: paths.rootPath,
@@ -100,6 +107,17 @@ private struct ExecExecutor: Sendable {
             ),
             store: AtomicJSONStore(paths: paths)
         )
+        let admissionStarted = DispatchTime.now().uptimeNanoseconds
+        let acquisitionClaim: RegistryClaim
+        do {
+            acquisitionClaim = try await RegistryGate.shared(paths: paths, waitSeconds: options.waitSeconds)
+        } catch {
+            let classified = classify(error)
+            stderr(classified.failure.description)
+            return classified.exitCode
+        }
+        defer { acquisitionClaim.release() }
+
         do {
             try publication.publishInitial()
         } catch {
@@ -120,7 +138,7 @@ private struct ExecExecutor: Sendable {
             lease = try await LeaseSet.acquire(
                 resources,
                 paths: paths,
-                waitSeconds: options.waitSeconds,
+                waitSeconds: try remainingAcquisitionWait(options.waitSeconds, since: admissionStarted),
                 initialMetadata: { lease in
                     metadata.value(lease: lease, state: .acquiring, childPID: nil)
                 },
@@ -134,6 +152,7 @@ private struct ExecExecutor: Sendable {
                 metadata: metadata
             )
         }
+        acquisitionClaim.release()
         reportMetadataIssues(lease)
 
         let childEnvironment: [String: String]
@@ -248,6 +267,9 @@ private struct ExecExecutor: Sendable {
         }
         if let error = error as? FileLockError {
             return (error.failure, 70)
+        }
+        if let error = error as? AgentLeaseFailure {
+            return (error, 70)
         }
         if let error = error as? AtomicJSONStoreError {
             return (error.failure, 70)

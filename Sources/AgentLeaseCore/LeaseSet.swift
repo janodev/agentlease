@@ -140,6 +140,9 @@ public final class LeaseSet: Sendable {
             throw LeaseSetError.invalidWaitSeconds(waitSeconds)
         }
         try checkDescriptorLimit(resourceCount: resources.resources.count)
+        let deadline = MonotonicDeadline(waitSeconds: waitSeconds)
+        let admission = try await RegistryGate.shared(paths: paths, waitSeconds: waitSeconds)
+        defer { admission.release() }
 
         var openedLocks: [FileLock] = []
         do {
@@ -160,7 +163,6 @@ public final class LeaseSet: Sendable {
             throw error
         }
 
-        let deadline = MonotonicDeadline(waitSeconds: waitSeconds)
         var acquiredCount = 0
         var metadataIssues: [MetadataWriteIssue] = []
         var didReportContention = false
@@ -267,7 +269,10 @@ public final class LeaseSet: Sendable {
             )
         }
         let softLimit = UInt64(limit.rlim_cur)
-        let minimumRequired = UInt64(FileLock.minimumOwnedDescriptor) + UInt64(resourceCount)
+        // Each preopened resource also retains a distinct registry claim until
+        // acquisition. Include those transient descriptors and root bookkeeping.
+        let minimumRequired = UInt64(FileLock.minimumOwnedDescriptor)
+            + UInt64(resourceCount * 2) + 8
         guard softLimit >= minimumRequired else {
             throw LeaseSetError.resourceLimit(requested: resourceCount, softLimit: softLimit)
         }
