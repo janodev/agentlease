@@ -45,11 +45,18 @@ public enum SupervisedSubprocess {
         ),
     ]
 
+    /// Redirected output descriptors remain owned by the caller. Keep them open
+    /// until this operation has completed, including cancellation teardown.
+    /// A nil output descriptor inherits the corresponding standard stream.
     public static func run(
         executablePath: String,
         arguments: [String],
         environment: [String: String]? = nil,
         inheritedDescriptors: [Int32] = [],
+        workingDirectory: String? = nil,
+        standardOutputDescriptor: Int32? = nil,
+        standardErrorDescriptor: Int32? = nil,
+        teardownSequence: [TeardownStep]? = nil,
         onStart: @escaping @Sendable (Int32) async throws -> Void = { _ in }
     ) async throws -> SupervisedProcessResult {
         guard let executableArgument = arguments.first else {
@@ -59,7 +66,7 @@ public enum SupervisedSubprocess {
 
         let descriptorValues = inheritedDescriptors
         var platformOptions = PlatformOptions()
-        platformOptions.teardownSequence = teardownSequence
+        platformOptions.teardownSequence = teardownSequence ?? Self.teardownSequence
         platformOptions.preSpawnProcessConfigurator = { spawnAttributes, fileActions in
             var flags: Int16 = 0
             let getFlagsResult = posix_spawnattr_getflags(&spawnAttributes, &flags)
@@ -163,10 +170,17 @@ public enum SupervisedSubprocess {
                 remainingValues: Array(arguments.dropFirst())
             ),
             environment: subprocessEnvironment,
+            workingDirectory: workingDirectory.map { .init($0) },
             platformOptions: platformOptions,
             input: .none,
-            output: .currentStandardOutput,
-            error: .currentStandardError
+            output: .fileDescriptor(
+                .init(rawValue: standardOutputDescriptor ?? STDOUT_FILENO),
+                closeAfterSpawningProcess: false
+            ),
+            error: .fileDescriptor(
+                .init(rawValue: standardErrorDescriptor ?? STDERR_FILENO),
+                closeAfterSpawningProcess: false
+            )
         ) { execution in
             try await onStart(execution.processIdentifier.value)
         }
@@ -187,6 +201,17 @@ public enum SupervisedSubprocess {
     public static func classifyLaunchError(_ error: any Error) -> SupervisedLaunchError {
         if let subprocessError = error as? SubprocessError {
             let errorNumber = subprocessError.underlyingError?.rawValue
+            if subprocessError.code == .failedToChangeWorkingDirectory {
+                return SupervisedLaunchError(
+                    exitCode: 70,
+                    failure: AgentLeaseFailure(
+                        kind: .spawn,
+                        operation: "changeWorkingDirectory",
+                        errorNumber: errorNumber,
+                        message: subprocessError.description
+                    )
+                )
+            }
             if errorNumber == ENOENT || errorNumber == ENOTDIR {
                 return SupervisedLaunchError(
                     exitCode: 127,

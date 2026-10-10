@@ -28,18 +28,66 @@ The spike verifies these behaviors against the selected dependency:
 3. `Arguments(executablePathOverride:remainingValues:)` preserves the caller's
    selected `argv[0]` independently from the resolved executable path.
 4. Swift Subprocess resets child signal dispositions to defaults.
-5. Cancellation runs the two-second process-group interrupt step, the five-second
+5. In the fixture where both the leader and grandchild ignore initial signals,
+   cancellation runs the two-second process-group interrupt step, the five-second
    process-group termination step, and the implicit final process-group kill.
-   The direct child is reaped before the operation returns, and an ignoring
-   grandchild is removed with the group.
+   The direct child is reaped before the operation returns, and the grandchild
+   is removed with the group. This does not prove later escalation when the
+   leader exits after an earlier signal; see the immediate policy below.
 6. A descriptor retained with `F_DUPFD_CLOEXEC` remains close-on-exec in the
    coordinator. `posix_spawn_file_actions_addinherit_np` makes it available with
    close-on-exec cleared in the child.
 7. Killing the coordinator with `SIGKILL` leaves the inherited `flock` held by
    the surviving child. A separate waiter acquires it only after that child dies.
 
-Byte-streaming output is deferred because version one does not capture ordinary
-child output.
+Byte-streaming output remains separate from raw-file redirection. The AgentLease
+CLI inherits ordinary child output rather than capturing it.
+
+# Core output redirection
+
+`SupervisedSubprocess.run` accepts an optional `workingDirectory` and optional
+`standardOutputDescriptor` / `standardErrorDescriptor`. Existing callers keep
+their current directory and inherited standard streams when these arguments
+are omitted. Working-directory selection uses the dependency's checked Darwin
+`posix_spawn_file_actions_addchdir_np` path and retains the session and selected
+lease-descriptor configuration below.
+
+The caller owns redirected descriptors and keeps them open until the awaited
+operation completes, including failure and cancellation teardown. Subprocess
+duplicates each chosen descriptor onto its child standard stream with
+`closeAfterSpawningProcess: false`; the caller's descriptor stays open and its
+close-on-exec flag stays unchanged. The Core does not open, validate, flush, or
+close caller log files.
+
+Redirecting to regular files preserves arbitrary bytes without a capture-size
+limit or a pipe read waiting for descendant EOF. Normal and signal termination
+retain the same result policy. Descendants can retain their inherited standard
+streams after the direct child finishes, so logs may continue changing; the
+result describes the direct child rather than finality of all output or
+descendant termination. Disk write failure is observed by the writing child,
+not automatically converted into a Core capture error.
+
+`SupervisedLoggingTests` exercises exact arguments and working directory,
+separate large binary logs, native nonzero and signal results, retained caller
+descriptors after success and callback failure, and lock retention by a
+descendant after the direct child exits with redirection enabled.
+
+A dependency error explicitly identifying a failed working-directory change
+is classified as setup failure (`spawn`, operation `changeWorkingDirectory`,
+exit 70), even when its errno is `ENOENT`. It must not be reported as a missing
+executable (exit 127). The missing-directory fixture verifies that no start
+callback runs and caller-owned output descriptors remain open.
+
+The Core also accepts an optional `teardownSequence`; omission retains the
+AgentLease CLI's graceful defaults. Callers that require immediate cancellation
+may select a first step sending `.kill` to the process group. This addresses
+Subprocess 1.0 stopping further escalation once the direct child exits: a gentle
+first signal can terminate that leader before an ignoring descendant receives
+a later step. The immediate policy targets a still-live leader's entire group
+at the first step, and `SupervisedLoggingTests.immediateGroupCancellation`
+checks direct-child reaping and disappearance of its signal-ignoring descendant.
+It does not reach descendants that have already left that group, or guarantee
+group cleanup if the leader exited before cancellation.
 
 # Session configuration
 

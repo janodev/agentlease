@@ -80,6 +80,15 @@ oracle, with explicit assertions on file existence and inode identity.
 
 # Platform evidence
 
+The Core's optional raw-file output and working-directory parameters have
+focused coverage in `SupervisedLoggingTests`: exact argument handling, separated
+binary streams larger than capture limits, native exit/signal results,
+caller-owned descriptor lifetime after success and post-spawn failure, and
+descendant lease retention with redirection enabled. Its immediate group-kill
+case checks cancellation with a live leader and a signal-ignoring descendant.
+Graceful cancellation with an ignoring leader and coordinator-death proofs
+remain in `SupervisedSubprocessTests` and the CLI lifecycle suites.
+
 The integration suite runs against Swift 6.4 and the macOS 27 SDK. Swift
 Subprocess behavior that affects session creation, descriptor inheritance,
 signal defaults, process-group escalation, and reaping remains covered by the
