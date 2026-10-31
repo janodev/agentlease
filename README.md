@@ -12,6 +12,20 @@ Darwin `flock` ownership is authoritative; JSON records and lock metadata are
 diagnostic only. It is a standalone tool and does not depend on Beads, SimLease,
 Notika, or an Xcode project.
 
+## Why AgentLease?
+
+A shared `lock.md` is simple, but two agents can both read "free" before either
+writes "taken", or a crashed agent can leave its reservation behind. AgentLease
+uses kernel-managed advisory file locks (`flock`) to make acquisition atomic.
+Ownership ends when the last holding descriptor closes, including after a crash;
+surviving child processes can inherit and retain the lock.
+
+Resources are names you choose, such as `myapp:build-output`. Shared leases let
+agents read the same build artifacts concurrently; exclusive leases reserve them
+for rebuilding or deletion. AgentLease waits for busy resources and acquires
+multiple resources in a consistent order to avoid lock-order deadlocks. All
+participants must use the same resource names and state root.
+
 ## Requirements
 
 - macOS 27 or later
