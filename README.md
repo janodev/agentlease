@@ -40,10 +40,11 @@ Build a release binary and copy it to a directory on `PATH`:
 
 ```sh
 swift build -c release
-install -m 755 .build/release/agentlease "$HOME/.local/bin/agentlease"
+install -d "$HOME/Developer/tools"
+install -m 755 .build/release/agentlease "$HOME/Developer/tools/agentlease"
 ```
 
-The destination directory must already exist. A packaged release can install
+Add `~/Developer/tools` to `PATH`. A packaged release can install
 the same built `agentlease` executable; no runtime service or daemon is needed.
 This contract reports `agentlease --version` as `2.1.0`. Run-record and status
 JSON retain schema version 2, and the inherited descriptor manifest retains
