@@ -44,6 +44,9 @@ The Swift package declares `// swift-tools-version: 6.4` and `.macOS(.v27)`.
 
 ## Install
 
+Just ask your coding agent to install AgentLease from this repository. It can
+handle the steps below for you.
+
 Build a release binary and copy it to a directory on `PATH`:
 
 ```sh
