@@ -248,3 +248,7 @@ CI requires a self-hosted Apple-silicon runner with macOS 27 and Xcode 27 and
 checks the Swift 6.4 toolchain before running those Makefile targets. The
 authoritative behavior and implementation rationale are indexed in
 [Docs/index.md](Docs/index.md).
+
+## License
+
+MIT — see [LICENSE](LICENSE).
