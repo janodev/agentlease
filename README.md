@@ -1,10 +1,3 @@
----
-type: Reference
-title: AgentLease
-description: Documents installation, named-resource execution, and coordinated retention for AgentLease.
-tags: [agentlease, macos, locking, retention]
----
-
 # AgentLease
 
 These projects work together to coordinate coding agents on one Mac:

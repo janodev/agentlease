@@ -1,12 +1,3 @@
----
-type: Architecture
-title: Direct exec lifecycle
-description: Records direct process replacement, descriptor handoff, signal inheritance, and failure behavior.
-tags: [agentlease, exec, darwin, descriptors]
-timestamp: 2026-09-14T00:00:00+02:00
-status: implemented
----
-
 # Replacement contract
 
 `agentlease exec` shares resource validation, executable resolution, argument

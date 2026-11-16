@@ -1,12 +1,3 @@
----
-type: Architecture
-title: Supervised run lifecycle
-description: Records AgentLease run-mode validation, publication, inheritance, signal, and exit-precedence behavior.
-tags: [agentlease, run, subprocess, signals]
-timestamp: 2026-09-14T00:00:00+02:00
-status: implemented
----
-
 # Lifecycle
 
 `agentlease run` validates raw UTF-8 arguments before ArgumentParser, validates

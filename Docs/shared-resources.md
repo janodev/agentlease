@@ -1,12 +1,3 @@
----
-type: Architecture
-title: Shared resources and inherited descriptor manifest
-description: Defines AgentLease 2 shared locking, schema changes, and the child descriptor contract.
-tags: [agentlease, flock, shared-locks, descriptors, environment]
-timestamp: 2026-09-14T12:00:00+02:00
-status: implemented
----
-
 # Version and compatibility
 
 AgentLease 2.0.0 adds shared resource leases and versioned resource-mode fields.

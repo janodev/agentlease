@@ -1,11 +1,3 @@
----
-type: Verification
-title: AgentLease verification map
-description: Maps original scenarios, shared leases, and coordinated retention to automated regression coverage.
-tags: [agentlease, testing, verification]
-status: implemented
----
-
 # Test strategy
 
 Swift Testing suites combine focused core checks with real subprocesses and

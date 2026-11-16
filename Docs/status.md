@@ -1,12 +1,3 @@
----
-type: Architecture
-title: Status inspection
-description: Records the read-only kernel ownership probe and diagnostic metadata classifications.
-tags: [agentlease, status, flock, json]
-timestamp: 2026-09-14T00:00:00+02:00
-status: implemented
----
-
 # Authority and enumeration
 
 `agentlease status` opens the validated state root and enumerates every entry in
