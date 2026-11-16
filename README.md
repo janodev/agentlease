@@ -14,16 +14,10 @@ AgentLease, SimLease, and SimSlim work independently. AgentBuild is a build driv
 
 ## Why AgentLease?
 
-Two agents start large builds on the same Mac. Both builds compete for CPU and
-memory, and the extra contention can slow them down. AgentBuild uses an exclusive
-AgentLease `host:compile` lease to queue compilation, then releases it before tests
-so the next build can begin while tests run.
+Examples:
 
-UI automation needs exclusive desktop access: one agent switching windows or
-clicking can disrupt another agent's test. Keep the complete UI workflow under
-one lease, from launch through teardown. The companion
-[SimLease](https://github.com/janodev/simlease#macos-ui-testing) tool provides this
-with `simlease macos-ui`.
+- **Competing for CPU.** Compilation can saturate the CPU, so queueing builds reduces contention. AgentBuild uses an exclusive AgentLease `host:compile` lease to do this.
+- **Queueing exclusive resources.** UI automation requires exclusive access to the desktop to prevent agents from interfering with each other's clicks and keyboard focus.
 
 A shared `lock.md` is simple, but two agents can both read "free" before either
 writes "taken", or a crashed agent can leave its reservation behind. AgentLease
