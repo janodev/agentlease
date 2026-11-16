@@ -19,11 +19,14 @@ Examples:
 - **Competing for CPU.** Compilation can saturate the CPU, so queueing builds reduces contention. AgentBuild uses an exclusive AgentLease `host:compile` lease to do this.
 - **Queueing exclusive resources.** UI automation requires exclusive access to the desktop to prevent agents from interfering with each other's clicks and keyboard focus.
 
-A shared `lock.md` is simple, but two agents can both read "free" before either
-writes "taken", or a crashed agent can leave its reservation behind. AgentLease
-uses kernel-managed advisory file locks (`flock`) to make acquisition atomic.
-Ownership ends when the last holding descriptor closes, including after a crash;
-surviving child processes can inherit and retain the lock.
+### What's wrong with using a lock file?
+
+AgentLease uses lock files too, with ownership enforced by the operating system.
+A plain `lock.md` recording "free" or "taken" leaves these problems to the agents:
+
+- **Races.** Two agents can read "free" before either writes "taken". AgentLease uses `flock` to make acquisition atomic.
+- **Stale claims.** A crashed agent can leave "taken" behind. Kernel ownership ends when the last holding file descriptor closes, including after a crash.
+- **Surviving work.** An agent can die while its build keeps running. Inherited lock descriptors let child processes retain ownership while they continue working.
 
 Resources are names you choose, such as `myapp:build-output`. Shared leases let
 agents read the same build artifacts concurrently; exclusive leases reserve them
