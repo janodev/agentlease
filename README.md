@@ -4,20 +4,13 @@ Run multiple coding agents on one Mac with less resource contention, lighter
 simulators, and less disk clutter. Competing builds and desktop UI tests take
 turns while independent work continues in parallel.
 
+This project is part of a set of tools:
 - [AgentBuild](https://github.com/janodev/agentbuild) coordinates builds and tests, reuses caches, and records results.
 - [AgentLease](https://github.com/janodev/agentlease) coordinates access to shared resources, reducing contention and preventing conflicting work.
 - [SimLease](https://github.com/janodev/simlease) provides disposable simulators, cleans them up afterward, and queues macOS UI automation.
 - [SimSlim](https://github.com/janodev/simslim) disables unneeded Simulator background services to reduce memory use.
 
-AgentLease, SimLease, and SimSlim work independently. AgentBuild is a build driver
-that runs supported project workflows and coordinates the other tools as needed.
-
----
-
-AgentLease 2 coordinates local agent workflows with shared or exclusive named resources.
-Darwin `flock` ownership is authoritative; JSON records and lock metadata are
-diagnostic only. It is a standalone tool and does not depend on Beads, SimLease,
-Notika, or an Xcode project.
+AgentLease, SimLease, and SimSlim work independently. AgentBuild is a build driver that runs supported project workflows and coordinates the other tools as needed.
 
 ## Why AgentLease?
 
