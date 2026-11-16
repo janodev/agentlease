@@ -1,3 +1,10 @@
+---
+type: Implementation Brief
+title: AgentLease implementation brief
+description: Defines the macOS AgentLease CLI ownership contract and implementation milestones.
+tags: [agentlease, macos, implementation]
+---
+
 # AgentLease implementation brief
 
 Status: Version 2 implemented and verified; original Milestones 0 through 4 complete
@@ -906,7 +913,7 @@ Optional byte-stream capture is not a prerequisite for version 1.
 
 Completion gate: the spike builds and its process tests pass on macOS 27/Xcode
 27. Record the exact resolved package version and compiled API usage in concise
-Markdown documentation under `Docs/`, linked from `Docs/index.md`. If any ownership
+OKF documentation under `Docs/`, linked from `Docs/index.md`. If any ownership
 or teardown proof fails, resolve that failure before proceeding with the CLI.
 
 ### Milestone 1: locking core

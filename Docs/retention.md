@@ -1,3 +1,10 @@
+---
+type: Architecture
+title: Coordinated retention
+description: Defines guarded idle-resource retirement, conservative run-history pruning, and opt-in daily cleanup.
+tags: [agentlease, flock, retention, coordination]
+---
+
 # Permanent coordination
 
 AgentLease 2.1 uses one permanent `.registry.lock` in each state root. It is a

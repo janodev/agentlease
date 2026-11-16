@@ -1,3 +1,12 @@
+---
+type: Integration Reference
+title: Swift Subprocess integration
+description: Records the verified Swift Subprocess APIs and Darwin process behavior used by AgentLease.
+tags: [agentlease, subprocess, darwin, testing]
+timestamp: 2026-09-13T00:00:00Z
+status: implemented
+---
+
 # Scope
 
 AgentLease uses Swift Subprocess 1.0.0 for supervised execution. The package is

@@ -1,3 +1,10 @@
+---
+type: Architecture
+title: AgentLease locking core
+description: Records filesystem, descriptor, registry coordination, and persistence invariants.
+tags: [agentlease, darwin, flock, locking]
+---
+
 # Ownership model
 
 `ResourceSet` validates the complete shared and exclusive request before
